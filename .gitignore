@@ -1,0 +1,7 @@
+venv/
+venv311/
+waverepo/
+__pycache__/
+*.pyc
+.env
+.vscode/
