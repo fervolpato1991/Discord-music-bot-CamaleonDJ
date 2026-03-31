@@ -48,7 +48,7 @@ while True:
             if not bot_ya_corriendo():
                 log("Encendiendo bot...")
                 subprocess.Popen(["venv\\Scripts\\python.exe", "bot.py"])
-                time.sleep(10)  # evita múltiples ejecuciones
+                time.sleep(10)
 
         if estado == "OFF":
             BOT_ACTIVO = False 

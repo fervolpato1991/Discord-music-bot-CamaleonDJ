@@ -15,6 +15,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 FFMPEG_PATH = "C:/ffmpeg/bin/ffmpeg.exe"
 
+queue = []
+is_playing = False
+
 ytdl_format_options = {
     'format': 'bestaudio[ext=webm]/bestaudio',
     'outtmpl': 'song_%(id)s.%(ext)s',
@@ -42,6 +45,62 @@ ffmpeg_options = {
 
 ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
 
+async def play_next(ctx):
+    global is_playing
+
+    if len(queue) > 0:
+        is_playing = True
+        url = queue.pop(0)
+
+        vc = ctx.voice_client
+
+        loop = bot.loop
+
+        def download():
+            return ytdl.extract_info(url, download=True)
+
+        data = await loop.run_in_executor(None, download)
+        filename = ytdl.prepare_filename(data)
+
+        vc.current_file = filename
+
+        source = discord.PCMVolumeTransformer(
+            discord.FFmpegPCMAudio(
+                filename,
+                executable=FFMPEG_PATH,
+                options='-vn'
+            ),
+            volume=1.0
+        )
+
+        def after_playing(error):
+            try:
+                if os.path.exists(filename):
+                    os.remove(filename)
+            except:
+                pass
+
+            fut = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+            try:
+                fut.result()
+            except:
+                pass
+
+        vc.play(source, after=after_playing)
+
+        await ctx.send(f"🎶 Reproduciendo: {data['title']}")
+
+    else:
+        is_playing = False
+
+@bot.command()
+async def queue_list(ctx):
+    if len(queue) == 0:
+        await ctx.send("📭 Cola vacía")
+    else:
+        msg = "\n".join([f"{i+1}. {url}" for i, url in enumerate(queue)])
+        await ctx.send(f"📜 Cola:\n{msg}")
+
 @bot.event
 async def on_ready():
     print(f"Conectado como {bot.user}")
@@ -66,81 +125,25 @@ async def start(ctx):
 
 @bot.command()
 async def play(ctx, *, url):
-    vc = ctx.voice_client
+    global is_playing
 
-    if not vc:
+    if not ctx.voice_client:
         await ctx.invoke(join)
-        vc = ctx.voice_client
 
-    await ctx.send("⏳ Iniciando...")
+    queue.append(url)
 
-    loop = bot.loop
+    await ctx.send("➕ Canción agregada a la cola")
 
-    def download():
-        return ytdl.extract_info(url, download=True)
-
-    data = await loop.run_in_executor(None, download)
-    filename = ytdl.prepare_filename(data)
-    
-    if vc.is_playing() or vc.is_paused():
-        vc.stop()
-        await asyncio.sleep(1)
-        
-        for file in os.listdir():
-            if file.startswith("song_"):
-                try:
-                    os.remove(file)
-                except:
-                    pass
-    
-    vc.current_file = filename
-
-    source = discord.PCMVolumeTransformer(
-        discord.FFmpegPCMAudio(
-            filename,
-            executable=FFMPEG_PATH,
-            options='-vn'
-        ),
-        volume=1.0
-    )
-
-    def after_playing(error):
-        try:
-            if os.path.exists(filename):
-                os.remove(filename)
-                print(f"{filename} borrado")
-        except Exception as e:
-            print(f"Error borrando: {e}")
-
-    vc.play(source, after=after_playing)
-
-    await ctx.send(f"Reproduciendo: {data['title']}")
+    if not is_playing:
+        await play_next(ctx)
 
 @bot.command()
 async def skip(ctx):
     vc = ctx.voice_client
 
-    if not vc or not vc.is_connected():
-        await ctx.send("❌ No estoy en un canal de voz")
-        return
-
-    if not vc.is_playing():
-        await ctx.send("❌ No hay nada reproduciéndose")
-        return
-
-    vc.stop()
-
-    await asyncio.sleep(1)
-
-    if hasattr(vc, "current_file"):
-        try:
-            if os.path.exists(vc.current_file):
-                os.remove(vc.current_file)
-                print("Archivo borrado (skip)")
-        except Exception as e:
-            print(f"Error borrando: {e}")
-
-    await ctx.send("⏭️ Canción saltada")
+    if vc and vc.is_playing():
+        vc.stop()
+        await ctx.send("⏭️ Saltando canción...")
 
 @bot.command()
 async def leave(ctx):
