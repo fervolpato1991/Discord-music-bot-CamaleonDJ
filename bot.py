@@ -16,10 +16,13 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 FFMPEG_PATH = "C:/ffmpeg/bin/ffmpeg.exe"
 
 ytdl_format_options = {
-    'format': 'bestaudio/best',
+    'format': 'bestaudio[ext=webm]/bestaudio',
     'outtmpl': 'song_%(id)s.%(ext)s',
-    'quiet': False,
-    'noplaylist': True
+    'quiet': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'no_warnings': True
 }
 
 ffmpeg_options = {
@@ -66,12 +69,11 @@ async def play(ctx, *, url):
         await ctx.invoke(join)
         vc = ctx.voice_client
 
-    await ctx.send("⏳ Descargando...")
+    await ctx.send("⏳ Iniciando...")
 
     loop = bot.loop
 
     def download():
-        ytdl.params['outtmpl'] = f"song_{int(time.time())}.%(ext)s"
         return ytdl.extract_info(url, download=True)
 
     data = await loop.run_in_executor(None, download)
@@ -87,6 +89,8 @@ async def play(ctx, *, url):
                     os.remove(file)
                 except:
                     pass
+    
+    vc.current_file = filename
 
     source = discord.PCMVolumeTransformer(
         discord.FFmpegPCMAudio(
@@ -111,8 +115,20 @@ async def play(ctx, *, url):
 
 @bot.command()
 async def leave(ctx):
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
+    vc = ctx.voice_client
+
+    if vc:
+        vc.stop()
+
+        if hasattr(vc, "current_file"):
+            try:
+                if os.path.exists(vc.current_file):
+                    os.remove(vc.current_file)
+                    print("Archivo borrado (leave)")
+            except Exception as e:
+                print(f"Error borrando: {e}")
+
+        await vc.disconnect()
 
 @bot.command()
 async def pause(ctx):
@@ -135,8 +151,18 @@ async def resume(ctx):
 @bot.command()
 async def stop(ctx):
     vc = ctx.voice_client
+
     if vc:
         vc.stop()
+
+        if hasattr(vc, "current_file"):
+            try:
+                if os.path.exists(vc.current_file):
+                    os.remove(vc.current_file)
+                    print("Archivo borrado (stop)")
+            except Exception as e:
+                print(f"Error borrando: {e}")
+
         await ctx.send("⏹️ Detenido")
 
 @bot.command()
