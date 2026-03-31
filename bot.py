@@ -122,6 +122,7 @@ async def shutdown(ctx):
     await ctx.send("Apagando bot...")
 
     vc = ctx.voice_client
+    
     if vc:
         vc.stop()
         await vc.disconnect()
