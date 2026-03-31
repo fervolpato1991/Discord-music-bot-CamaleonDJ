@@ -1,15 +1,20 @@
+print("Listener iniciado")
 import time
 import requests
 import psutil
 import subprocess
 from datetime import datetime 
+import os
 
 URL = "https://raw.githubusercontent.com/fervolpato1991/Discord-music-bot/refs/heads/main/start.txt"
+
+LOG_PATH = os.path.join(os.path.dirname(__file__), "listener.log")
 
 bot_running = False
 
 def log(msg):
-    with open("listener.log", "a", encoding="utf-8") as f:
+    print(msg)
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now()} - {msg}\n")
 
 def bot_ya_corriendo():

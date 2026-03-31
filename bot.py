@@ -20,8 +20,18 @@ ytdl_format_options = {
 }
 
 ffmpeg_options = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn -filter:a "volume=1.5"'
+    'before_options': (
+        '-reconnect 1 '
+        '-reconnect_streamed 1 '
+        '-reconnect_delay_max 5 '
+        '-nostdin'
+    ),
+    'options': (
+        '-vn '
+        '-ac 2 '
+        '-ar 48000 '
+        '-af "aresample=async=1,volume=2.0"'
+    )
 }
 
 ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
@@ -40,28 +50,29 @@ async def join(ctx):
 
 @bot.command()
 async def play(ctx, *, url):
-    if not ctx.voice_client:
+    vc = ctx.voice_client
+
+    if not vc:
         await ctx.invoke(join)
+        vc = ctx.voice_client
+
+    if vc.is_playing():
+        vc.stop()
 
     loop = bot.loop
-    data = await loop.run_in_executor(
-        None,
-        lambda: ytdl.extract_info(url, download=False)
-    )
-
-   
-    if 'entries' in data:
-        data = data['entries'][0]
+    data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
 
     stream_url = data['url']
 
-    source = discord.FFmpegOpusAudio(
-    stream_url,
-    executable=FFMPEG_PATH,
-    **ffmpeg_options
-)
+    source = discord.PCMVolumeTransformer(
+        discord.FFmpegPCMAudio(
+            stream_url,
+            executable=FFMPEG_PATH,
+            **ffmpeg_options
+        )
+    )
 
-    ctx.voice_client.play(source)
+    vc.play(source)
 
     await ctx.send(f"Reproduciendo: {data['title']}")
 
@@ -72,20 +83,27 @@ async def leave(ctx):
 
 @bot.command()
 async def pause(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.pause()
+    vc = ctx.voice_client
+    if vc and vc.is_playing():
+        vc.pause()
         await ctx.send("⏸️ Pausado")
+    else:
+        await ctx.send("No hay audio reproduciéndose")
 
 @bot.command()
 async def resume(ctx):
-    if ctx.voice_client and ctx.voice_client.is_paused():
-        ctx.voice_client.resume()
-        await ctx.send("▶️ Resumido")
+    vc = ctx.voice_client
+    if vc and vc.is_paused():
+        vc.resume()
+        await ctx.send("▶️ Reanudado")
+    else:
+        await ctx.send("No está en pausa")
 
 @bot.command()
 async def stop(ctx):
-    if ctx.voice_client:
-        ctx.voice_client.stop()
+    vc = ctx.voice_client
+    if vc:
+        vc.stop()
         await ctx.send("⏹️ Detenido")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
