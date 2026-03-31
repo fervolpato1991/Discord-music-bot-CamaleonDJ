@@ -57,13 +57,7 @@ async def play(ctx, *, url):
         await ctx.invoke(join)
         vc = ctx.voice_client
 
-    if vc.is_playing():
-        vc.stop()
-
-    # 🧹 borrar archivos anteriores (webm, mp3, etc)
-    for file in os.listdir():
-        if file.startswith("song."):
-            os.remove(file)
+    await ctx.send("⏳ Descargando...")
 
     loop = bot.loop
 
@@ -71,7 +65,6 @@ async def play(ctx, *, url):
         return ytdl.extract_info(url, download=True)
 
     data = await loop.run_in_executor(None, download)
-
     filename = ytdl.prepare_filename(data)
 
     source = discord.PCMVolumeTransformer(
@@ -83,7 +76,14 @@ async def play(ctx, *, url):
         volume=1.0
     )
 
+    if vc.is_playing():
+        vc.stop()
+
     vc.play(source)
+
+    for file in os.listdir():
+        if file.startswith("song.") and file != filename:
+            os.remove(file)
 
     await ctx.send(f"Reproduciendo: {data['title']}")
 
@@ -120,6 +120,12 @@ async def stop(ctx):
 @bot.command()
 async def shutdown(ctx):
     await ctx.send("Apagando bot...")
+
+    vc = ctx.voice_client
+    if vc:
+        vc.stop()
+        await vc.disconnect()
+
     await bot.close()
 
 bot.run(os.getenv("DISCORD_TOKEN"))
