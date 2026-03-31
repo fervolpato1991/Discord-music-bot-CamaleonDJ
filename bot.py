@@ -56,10 +56,13 @@ async def join(ctx):
 
 @bot.command()
 async def start(ctx):
-    with open("start.txt", "w") as f:
-        f.write("ON")
+    try:
+        with open("start.txt", "w") as f:
+            f.write("ON")
 
-    await ctx.send("Bot configurado para iniciar")
+        await ctx.send("🟢 Bot configurado para encenderse")
+    except Exception as e:
+        await ctx.send(f"Error: {e}")
 
 @bot.command()
 async def play(ctx, *, url):
@@ -112,6 +115,32 @@ async def play(ctx, *, url):
     vc.play(source, after=after_playing)
 
     await ctx.send(f"Reproduciendo: {data['title']}")
+
+@bot.command()
+async def skip(ctx):
+    vc = ctx.voice_client
+
+    if not vc or not vc.is_connected():
+        await ctx.send("❌ No estoy en un canal de voz")
+        return
+
+    if not vc.is_playing():
+        await ctx.send("❌ No hay nada reproduciéndose")
+        return
+
+    vc.stop()
+
+    await asyncio.sleep(1)
+
+    if hasattr(vc, "current_file"):
+        try:
+            if os.path.exists(vc.current_file):
+                os.remove(vc.current_file)
+                print("Archivo borrado (skip)")
+        except Exception as e:
+            print(f"Error borrando: {e}")
+
+    await ctx.send("⏭️ Canción saltada")
 
 @bot.command()
 async def leave(ctx):
@@ -167,16 +196,13 @@ async def stop(ctx):
 
 @bot.command()
 async def shutdown(ctx):
-    await ctx.send("Apagando bot...")
+    try:
+        with open("start.txt", "w") as f:
+            f.write("OFF")
 
-    with open("start.txt", "w") as f:
-        f.write("OFF")
-
-    vc = ctx.voice_client
-    if vc:
-        vc.stop()
-        await vc.disconnect()
-
-    await bot.close()
+        await ctx.send("🔴 Apagando bot...")
+        await bot.close()
+    except Exception as e:
+        await ctx.send(f"Error: {e}")
 
 bot.run(os.getenv("DISCORD_TOKEN"))
