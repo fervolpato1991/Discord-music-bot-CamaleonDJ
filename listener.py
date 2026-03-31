@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime 
 import os
 
-URL = "https://raw.githubusercontent.com/fervolpato1991/Discord-music-bot/refs/heads/main/start.txt"
+STATE_FILE = "start.txt"
 
 LOG_PATH = os.path.join(os.path.dirname(__file__), "listener.log")
 
@@ -31,8 +31,8 @@ ultimo_estado = None
 
 while True:
     try:
-        r = requests.get(URL)
-        estado = r.text.strip()
+        with open(STATE_FILE, "r") as f:
+            estado = f.read().strip()
 
         if estado != ultimo_estado:
             log(f"Estado cambiado: {estado}")

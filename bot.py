@@ -52,20 +52,10 @@ async def join(ctx):
 
 @bot.command()
 async def start(ctx):
-    await ctx.send("Intentando encender bot...")
+    with open("start.txt", "w") as f:
+        f.write("ON")
 
-    import psutil
-    for p in psutil.process_iter():
-        try:
-            if "bot.py" in " ".join(p.cmdline()):
-                await ctx.send("El bot ya está encendido")
-                return
-        except:
-            pass
-
-    subprocess.Popen(["venv\\Scripts\\python.exe", "bot.py"])
-
-    await ctx.send("Bot iniciado")
+    await ctx.send("Bot configurado para iniciar")
 
 @bot.command()
 async def play(ctx, *, url):
@@ -85,6 +75,13 @@ async def play(ctx, *, url):
     data = await loop.run_in_executor(None, download)
     filename = ytdl.prepare_filename(data)
 
+    for file in os.listdir():
+        if file.startswith("song.") and file != filename:
+            try:
+                os.remove(file)
+            except:
+                pass
+
     source = discord.PCMVolumeTransformer(
         discord.FFmpegPCMAudio(
             filename,
@@ -94,14 +91,18 @@ async def play(ctx, *, url):
         volume=1.0
     )
 
+    def after_playing(error):
+        try:
+            if os.path.exists(filename):
+                os.remove(filename)
+                print("Archivo borrado correctamente")
+        except Exception as e:
+            print(f"Error borrando: {e}")
+
     if vc.is_playing():
         vc.stop()
 
-    vc.play(source)
-
-    for file in os.listdir():
-        if file.startswith("song.") and file != filename:
-            os.remove(file)
+    vc.play(source, after=after_playing)
 
     await ctx.send(f"Reproduciendo: {data['title']}")
 
@@ -139,8 +140,10 @@ async def stop(ctx):
 async def shutdown(ctx):
     await ctx.send("Apagando bot...")
 
-    vc = ctx.voice_client
+    with open("start.txt", "w") as f:
+        f.write("OFF")
 
+    vc = ctx.voice_client
     if vc:
         vc.stop()
         await vc.disconnect()
