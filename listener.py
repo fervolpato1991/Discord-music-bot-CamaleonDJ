@@ -31,23 +31,29 @@ ultimo_estado = None
 
 while True:
     try:
-        with open(STATE_FILE, "r") as f:
-            estado = f.read().strip()
+        try:
+            with open(STATE_FILE, "r") as f:
+                estado = f.read().strip()
+        except:
+            estado = "OFF"
+
 
         if estado != ultimo_estado:
             log(f"Estado cambiado: {estado}")
             ultimo_estado = estado
 
-        if estado == "ON" and not BOT_ACTIVO:
-            log("Encendiendo bot...")
-            subprocess.Popen(["venv\\Scripts\\python.exe", "bot.py"])
-            BOT_ACTIVO = True
-            time.sleep(30)
-        
+        log(f"Estado leído: {estado}")
+
+        if estado == "ON":
+            if not bot_ya_corriendo():
+                log("Encendiendo bot...")
+                subprocess.Popen(["venv\\Scripts\\python.exe", "bot.py"])
+                time.sleep(10)  # evita múltiples ejecuciones
+
         if estado == "OFF":
-            BOT_ACTIVO = False
+            BOT_ACTIVO = False 
 
     except Exception as e:
         log(f"Error: {e}")
 
-    time.sleep(10)
+    time.sleep(5) 

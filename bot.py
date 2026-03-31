@@ -3,7 +3,8 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 import yt_dlp
-import subprocess
+import time
+import asyncio
 
 load_dotenv()
 
@@ -70,13 +71,19 @@ async def play(ctx, *, url):
     loop = bot.loop
 
     def download():
+        ytdl.params['outtmpl'] = f"song_{int(time.time())}.%(ext)s"
         return ytdl.extract_info(url, download=True)
 
     data = await loop.run_in_executor(None, download)
     filename = ytdl.prepare_filename(data)
 
+    if vc.is_playing() or vc.is_paused():
+        vc.stop()
+
+    await asyncio.sleep(1)
+
     for file in os.listdir():
-        if file.startswith("song.") and file != filename:
+        if file.startswith("song_") and file != filename:
             try:
                 os.remove(file)
             except:
@@ -95,12 +102,9 @@ async def play(ctx, *, url):
         try:
             if os.path.exists(filename):
                 os.remove(filename)
-                print("Archivo borrado correctamente")
+                print(f"{filename} borrado")
         except Exception as e:
             print(f"Error borrando: {e}")
-
-    if vc.is_playing():
-        vc.stop()
 
     vc.play(source, after=after_playing)
 
