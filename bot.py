@@ -60,8 +60,10 @@ async def play(ctx, *, url):
     if vc.is_playing():
         vc.stop()
 
-    if os.path.exists("song.mp3"):
-        os.remove("song.mp3")
+    # 🧹 borrar archivos anteriores (webm, mp3, etc)
+    for file in os.listdir():
+        if file.startswith("song."):
+            os.remove(file)
 
     loop = bot.loop
 

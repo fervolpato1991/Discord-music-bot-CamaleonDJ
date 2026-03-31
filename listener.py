@@ -9,6 +9,8 @@ URL = "https://raw.githubusercontent.com/fervolpato1991/Discord-music-bot/refs/h
 
 LOG_PATH = os.path.join(os.path.dirname(__file__), "listener.log")
 
+BOT_ACTIVO = False
+
 bot_running = False
 
 def log(msg):
@@ -36,9 +38,14 @@ while True:
             log(f"Estado cambiado: {estado}")
             ultimo_estado = estado
 
-        if estado == "ON" and not bot_ya_corriendo():
+        if estado == "ON" and not BOT_ACTIVO:
             log("Encendiendo bot...")
             subprocess.Popen(["venv\\Scripts\\python.exe", "bot.py"])
+            BOT_ACTIVO = True
+            time.sleep(30)
+        
+        if estado == "OFF":
+            BOT_ACTIVO = False
 
     except Exception as e:
         log(f"Error: {e}")
