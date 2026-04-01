@@ -155,11 +155,14 @@ async def play(ctx, *, url):
     "url": url,
     "title": data["title"]
 })
-
+    
     await ctx.send(f"➕ Agregado: {data['title']}")
 
-    if not is_playing:
+    if not is_playing: 
         await play_next(ctx)
+    else:
+        if not ctx.voice_client.is_playing():
+            await play_next(ctx)
 
 @bot.command()
 async def skip(ctx):
@@ -171,18 +174,24 @@ async def skip(ctx):
 
 @bot.command()
 async def leave(ctx):
+    global is_playing
+
     vc = ctx.voice_client
 
     if vc:
         vc.stop()
+        await asyncio.sleep(1)
+
+        is_playing = False
+        queue.clear()
 
         if hasattr(vc, "current_file"):
             try:
                 if os.path.exists(vc.current_file):
                     os.remove(vc.current_file)
                     print("Archivo borrado (leave)")
-            except Exception as e:
-                print(f"Error borrando: {e}")
+            except:
+                pass
 
         await vc.disconnect()
 
@@ -208,20 +217,25 @@ async def resume(ctx):
 
 @bot.command()
 async def stop(ctx):
+    global is_playing
+
     vc = ctx.voice_client
 
     if vc:
         vc.stop()
+
+        is_playing = False
+        queue.clear()
 
         if hasattr(vc, "current_file"):
             try:
                 if os.path.exists(vc.current_file):
                     os.remove(vc.current_file)
                     print("Archivo borrado (stop)")
-            except Exception as e:
-                print(f"Error borrando: {e}")
+            except:
+                pass
 
-        await ctx.send("⏹️ Detenido")
+        await ctx.send("⏹️ Detenido y lista borrada")
 
 @bot.command()
 async def shutdown(ctx):
