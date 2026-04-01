@@ -334,7 +334,7 @@ async def stop(ctx):
 
     if vc:
         vc.stop()
-        
+
         is_playing = False
         queue.clear()
 
@@ -356,6 +356,7 @@ async def shutdown(ctx):
 
         await ctx.send("🔴 Apagando bot...")
         await bot.close()
+        
     except Exception as e:
         await ctx.send(f"Error: {e}")
 
