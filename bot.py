@@ -3,7 +3,6 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 import yt_dlp
-import time
 import asyncio
 
 load_dotenv()
@@ -52,31 +51,70 @@ class PlayerControls(discord.ui.View):
         super().__init__(timeout=None)
         self.vc = vc
 
-    @discord.ui.button(label="⏯️", style=discord.ButtonStyle.green)
+        self.update_buttons()
+
+    def update_buttons(self):
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                if item.custom_id == "pause_resume":
+                    if self.vc.is_paused():
+                        item.label = "▶️"
+                        item.style = discord.ButtonStyle.green
+                    else:
+                        item.label = "⏸️"
+                        item.style = discord.ButtonStyle.grey
+
+    @discord.ui.button(label="⏸️", style=discord.ButtonStyle.grey, custom_id="pause_resume")
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.vc.is_playing():
             self.vc.pause()
-            await interaction.response.send_message("⏸️ Pausado", ephemeral=True)
         elif self.vc.is_paused():
             self.vc.resume()
-            await interaction.response.send_message("▶️ Reanudado", ephemeral=True)
+
+        self.update_buttons()
+        await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="⏭️", style=discord.ButtonStyle.red)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.vc.is_playing():
             self.vc.stop()
-            await interaction.response.send_message("⏭️ Saltado", ephemeral=True)
+        await interaction.response.defer()
 
     @discord.ui.button(label="⏹️", style=discord.ButtonStyle.grey)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.vc:
             self.vc.stop()
-            await interaction.response.send_message("⏹️ Detenido", ephemeral=True)
+        await interaction.response.defer()
 
 def progress_bar(current, total, length=20):
+    if total == 0:
+        return "🔘" + "▬" * (length - 1)
+
     progress = int(length * current / total)
     bar = "▬" * progress + "🔘" + "▬" * (length - progress)
     return bar
+
+async def update_progress_bar(vc, message, duration):
+    current = 0
+
+    while vc.is_playing() and current < duration:
+        await asyncio.sleep(5)
+        current += 5
+
+        try:
+            embed = message.embeds[0]
+
+            embed.set_field_at(
+                1,  # IMPORTANTE: posición del campo progreso
+                name="⏱️ Progreso",
+                value=progress_bar(current, duration),
+                inline=False
+            )
+
+            await message.edit(embed=embed)
+
+        except:
+            break
 
 async def play_next(ctx):
     global is_playing
@@ -136,7 +174,18 @@ async def play_next(ctx):
         if "thumbnail" in data:
             embed.set_thumbnail(url=data["thumbnail"])
             
-        embed.add_field(name="⏱️ Progreso", value=progress_bar(0, duration), inline=False)
+        if duration:
+            embed.add_field(
+                name="⏱️ Duración",
+                value=f"{duration//60}:{duration%60:02}",
+                inline=True
+                )
+            embed.add_field(
+                name="⏱️ Progreso",
+                value=progress_bar(0, duration),
+                inline=False
+                )
+            embed.add_field(name="👤 Pedido por", value=ctx.author.mention, inline=True)
         
         view = PlayerControls(vc)
         
@@ -144,40 +193,7 @@ async def play_next(ctx):
             await now_playing_message.edit(embed=embed, view=view)
         else:
             now_playing_message = await ctx.send(embed=embed, view=view)
-        
-        async def update_progress(vc, message, duration):
-            current = 0
-            
-            while vc.is_playing() and current < duration:
-                await asyncio.sleep(5)
-                current += 5
-                
-                embed = message.embeds[0]
-                embed.set_field_at(
-                    0,
-                    name="⏱️ Progreso",
-                    value=progress_bar(current, duration),
-                    inline=False
-                )
-                
-                try:
-                    await message.edit(embed=embed)
-                except:
-                    break
-
-        bot.loop.create_task(update_progress(vc, now_playing_message, duration))
-
-        if "thumbnail" in data:
-            embed.set_thumbnail(url=data["thumbnail"])
-            
-        if "duration" in data:
-            minutos = data["duration"] // 60
-            segundos = data["duration"] % 60
-            embed.add_field(name="Duración", value=f"{minutos}:{segundos:02}", inline=True)
-
-            embed.add_field(name="Pedido por", value=ctx.author.mention, inline=True)
-            
-            await ctx.send(embed=embed)
+            bot.loop.create_task(update_progress_bar(vc, now_playing_message, duration))
 
     else:
         is_playing = False
