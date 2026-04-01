@@ -53,6 +53,7 @@ async def play_next(ctx):
         is_playing = True
         song = queue.pop(0)
         url = song["url"]
+        title = song["title"]
    
         vc = ctx.voice_client
         
@@ -90,7 +91,24 @@ async def play_next(ctx):
 
         vc.play(source, after=after_playing)
 
-        await ctx.send(f"🎶 Reproduciendo: {data['title']}")
+        embed = discord.Embed(
+            title="🎵 Reproduciendo ahora",
+            description=f"**{title}**",
+            color=discord.Color.green()
+            )
+        embed.description += f"[{title}]({url})"
+        
+        if "thumbnail" in data:
+            embed.set_thumbnail(url=data["thumbnail"])
+            
+        if "duration" in data:
+            minutos = data["duration"] // 60
+            segundos = data["duration"] % 60
+            embed.add_field(name="Duración", value=f"{minutos}:{segundos:02}", inline=True)
+
+            embed.add_field(name="Pedido por", value=ctx.author.mention, inline=True)
+            
+            await ctx.send(embed=embed)
 
     else:
         is_playing = False
@@ -99,9 +117,21 @@ async def play_next(ctx):
 async def queue_list(ctx):
     if len(queue) == 0:
         await ctx.send("📭 Cola vacía")
-    else:
-        msg = "\n".join([f"{i+1}. {song['title']}" for i, song in enumerate(queue)])
-        await ctx.send(f"📜 Cola:\n{msg}")
+        return
+
+    embed = discord.Embed(
+        title="📜 Cola de reproducción",
+        color=discord.Color.blue()
+    )
+
+    for i, song in enumerate(queue[:10]):
+        embed.add_field(
+            name=f"{i+1}.",
+            value=song["title"],
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def volume_cmd(ctx, vol: int):
@@ -156,7 +186,13 @@ async def play(ctx, *, url):
     "title": data["title"]
 })
     
-    await ctx.send(f"➕ Agregado: {data['title']}")
+    embed = discord.Embed(
+        title="➕ Agregado a la cola",
+        description=f"**{data['title']}**",
+        color=discord.Color.orange()
+        )
+    
+    await ctx.send(embed=embed)
 
     if not is_playing: 
         await play_next(ctx)
@@ -170,7 +206,10 @@ async def skip(ctx):
 
     if vc and vc.is_playing():
         vc.stop()
-        await ctx.send("⏭️ Saltando canción...")
+        await ctx.send(embed=discord.Embed(
+            description="⏭️ Canción saltada",
+            color=discord.Color.red()
+            ))
 
 @bot.command()
 async def leave(ctx):
@@ -201,7 +240,10 @@ async def pause(ctx):
 
     if vc and vc.is_playing():
         vc.pause()
-        await ctx.send("⏸️ Pausado")
+        await ctx.send(embed= discord.Embed(
+            description="⏸️ Canción pausada",
+            color=discord.Color.red()
+        ))
     else:
         await ctx.send("No hay audio reproduciéndose")
 
