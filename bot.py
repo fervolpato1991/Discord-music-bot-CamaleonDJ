@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 import yt_dlp
 import asyncio
+import time
 
 load_dotenv()
 
@@ -43,6 +44,37 @@ ffmpeg_options = {
         '-af "aresample=async=1,volume=1.2"'
     )
 }
+
+def cleanup_temp_files():
+    for file in os.listdir():
+        if file.endswith(".webm"):
+            safe_delete(file)
+
+def safe_delete(file, retries=5, delay=1):
+    for i in range(retries):
+        try:
+            if file and os.path.exists(file):
+                os.remove(file)
+                print(f"🧹 Borrado: {file}")
+                return
+        except Exception as e:
+            print(f"Intento {i+1} fallido al borrar: {e}")
+            time.sleep(delay)
+
+    print(f"❌ No se pudo borrar: {file}")
+
+def format_queue():
+    if len(queue) == 0:
+        return "Vacía"
+
+    text = ""
+    for i, song in enumerate(queue[:5]):  # mostramos solo 5
+        text += f"`{i+1}.` {song['title']}\n"
+
+    if len(queue) > 5:
+        text += f"... y {len(queue)-5} más"
+
+    return text
 
 ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
 
@@ -147,17 +179,16 @@ async def play_next(ctx):
         )
 
         def after_playing(error):
-            try:
-                if os.path.exists(filename):
-                    os.remove(filename)
-            except:
-                pass
-
+            if error:
+                print(f"Error en reproducción: {error}")
+                
+            safe_delete(filename)
+            
             fut = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
             try:
                 fut.result()
-            except:
-                pass
+            except Exception as e:
+                print(f"Error en play_next: {e}")
 
         vc.play(source, after=after_playing)
 
@@ -186,6 +217,11 @@ async def play_next(ctx):
                 inline=False
                 )
             embed.add_field(name="👤 Pedido por", value=ctx.author.mention, inline=True)
+            embed.add_field(
+                name="📜 Próximas canciones",
+                value=format_queue(),
+                inline=False
+                )
         
         view = PlayerControls(vc)
         
@@ -236,6 +272,7 @@ async def volume_cmd(ctx, vol: int):
 
 @bot.event
 async def on_ready():
+    cleanup_temp_files()
     print(f"Conectado como {bot.user}")
 
 @bot.command()
@@ -291,10 +328,16 @@ async def skip(ctx):
 
     if vc and vc.is_playing():
         vc.stop()
+
+        await asyncio.sleep(1)
+
+        if hasattr(vc, "current_file"):
+            safe_delete(vc.current_file)
+
         await ctx.send(embed=discord.Embed(
             description="⏭️ Canción saltada",
             color=discord.Color.red()
-            ))
+        ))
 
 @bot.command()
 async def leave(ctx):
@@ -304,18 +347,14 @@ async def leave(ctx):
 
     if vc:
         vc.stop()
+
         await asyncio.sleep(1)
 
         is_playing = False
         queue.clear()
 
         if hasattr(vc, "current_file"):
-            try:
-                if os.path.exists(vc.current_file):
-                    os.remove(vc.current_file)
-                    print("Archivo borrado (leave)")
-            except:
-                pass
+            safe_delete(vc.current_file)
 
         await vc.disconnect()
 

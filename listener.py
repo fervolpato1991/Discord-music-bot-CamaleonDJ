@@ -1,5 +1,4 @@
 import time
-import requests
 import psutil
 import subprocess
 from datetime import datetime 
