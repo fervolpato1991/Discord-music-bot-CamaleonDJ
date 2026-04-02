@@ -45,10 +45,37 @@ ffmpeg_options = {
     )
 }
 
-def cleanup_temp_files():
+def cleanup_temp_files(active_file=None):
     for file in os.listdir():
         if file.endswith(".webm"):
+
+            if active_file and file == active_file:
+                continue
+
             safe_delete(file)
+
+async def auto_cleanup_loop():
+    await bot.wait_until_ready()
+
+    while True:
+        try:
+            vc = None
+
+            for guild in bot.guilds:
+                if guild.voice_client:
+                    vc = guild.voice_client
+                    break
+
+            active_file = None
+            if vc and hasattr(vc, "current_file"):
+                active_file = vc.current_file
+
+            cleanup_temp_files(active_file)
+
+        except Exception as e:
+            print(f"Error en auto cleanup: {e}")
+
+        await asyncio.sleep(30)
 
 def safe_delete(file, retries=5, delay=1):
     for i in range(retries):
@@ -293,6 +320,8 @@ async def volume_cmd(ctx, vol: int):
 @bot.event
 async def on_ready():
     cleanup_temp_files()
+    bot.loop.create_task(auto_cleanup_loop())
+
     print(f"Conectado como {bot.user}")
 
 @bot.command()
