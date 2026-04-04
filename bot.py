@@ -398,7 +398,7 @@ async def play(ctx, *, url):
     # 🎵 PLAYLIST
     if "entries" in data:
         count = 0
-        for entry in data["entries"][:100]:  # máximo 100
+        for entry in data["entries"][:200]:  # máximo 200
             if entry:
                 queue.append({
                     "url": entry["webpage_url"],
