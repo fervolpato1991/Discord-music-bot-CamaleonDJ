@@ -155,6 +155,7 @@ class PlayerControls(discord.ui.View):
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.vc.is_playing():
             self.vc.stop()
+            
         await interaction.response.defer()
 
     @discord.ui.button(label="⏹️", style=discord.ButtonStyle.grey)
