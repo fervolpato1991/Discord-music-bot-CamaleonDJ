@@ -218,6 +218,31 @@ async def send_temp_message(ctx, embed, delay=5):
     except:
         pass
 
+async def disconnect_if_alone(vc, delay=60):
+    global is_playing, queue
+
+    await asyncio.sleep(delay)
+
+    try:
+        if vc and vc.is_connected():
+            channel = vc.channel
+
+            members = [m for m in channel.members if not m.bot]
+
+            if len(members) == 0:
+
+                if vc.is_playing() or vc.is_paused():
+                    vc.stop()
+
+                queue.clear()
+                is_playing = False
+
+                await vc.disconnect()
+                print("🔌 Desconectado por canal vacío")
+
+    except Exception as e:
+        print(f"Error auto-disconnect: {e}")
+
 async def play_next(ctx):
     global is_playing
 
@@ -357,6 +382,16 @@ async def on_ready():
     bot.loop.create_task(auto_cleanup_loop())
 
     print(f"Conectado como {bot.user}")
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    vc = member.guild.voice_client
+
+    if vc and vc.channel:
+        members = [m for m in vc.channel.members if not m.bot]
+
+        if len(members) == 0:
+            bot.loop.create_task(disconnect_if_alone(vc, 60))
 
 @bot.command()
 async def join(ctx):
