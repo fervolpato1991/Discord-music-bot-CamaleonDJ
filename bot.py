@@ -407,6 +407,9 @@ async def play(ctx, *, url):
                 count += 1
 
             await ctx.send(f"📜 Playlist agregada: {count} canciones")
+        
+        if is_playlist:
+            await update_queue_panel()
 
         else:
             data = await loop.run_in_executor(
@@ -417,7 +420,7 @@ async def play(ctx, *, url):
             add_to_queue(url, data["title"], ctx.author)
 
             await ctx.send(f"🎶 Agregado: {data['title']}")
-            await update_queue_panel()
+            
 
     except Exception as e:
         await ctx.send(f"❌ Error al procesar: {e}")
@@ -425,6 +428,8 @@ async def play(ctx, *, url):
 
     if not is_playing:
         await play_next(ctx)
+    else:
+        await update_queue_panel()
 
 @bot.command()
 async def skip(ctx):
