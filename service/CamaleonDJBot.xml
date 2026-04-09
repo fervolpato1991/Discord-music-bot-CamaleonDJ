@@ -1,0 +1,13 @@
+<service>
+  <id>CamaleonDJBot</id>
+  <name>CamaleonDJ Bot</name>
+  <description>Discord Music Bot</description>
+
+  <executable>E:\discord-music-bot-CamaleonDJ\venv\Scripts\python.exe</executable>
+  <arguments>listener.py</arguments>
+
+  <workingdirectory>E:\discord-music-bot-CamaleonDJ</workingdirectory>
+
+  <logpath>E:\discord-music-bot-CamaleonDJ\logs</logpath>
+  <onfailure action="restart" delay="5 sec"/>
+</service>
