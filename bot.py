@@ -19,15 +19,32 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 
-ffmpeg_before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-ffmpeg_options = {'options': '-vn'}
+ffmpeg_before_options = (
+    '-reconnect 1 '
+    '-reconnect_streamed 1 '
+    '-reconnect_at_eof 1 '
+    '-reconnect_delay_max 3 '
+    '-hide_banner '
+    '-loglevel error'
+)
+
+ffmpeg_options = {
+    'options': (
+        '-vn '
+        '-f s16le '
+        '-ar 48000 '
+        '-ac 2'
+    )
+}
 
 ytdl_opts = {
     'format': 'bestaudio/best',
     'quiet': True,
     'noplaylist': True,
-    'extract_flat': False,
-    'socket_timeout': 10,
+    'extract_flat': 'in_playlist',
+    'socket_timeout': 15,
+    'source_address': '0.0.0.0',
+    'cache_dir': False
 }
 
 ytdl_opts_playlist = {
@@ -79,12 +96,6 @@ def format_queue():
         text += f"... y {len(queue) - 5} más"
     return text
 
-def progress_bar(current, total, length=20):
-    if total == 0:
-        return "🔘" + "▬" * (length - 1)
-    progress = int(length * current / total)
-    return "▬" * progress + "🔘" + "▬" * (length - progress)
-
 def create_embed(data, title, url, requester):
     embed = discord.Embed(
         title="🎵 Reproduciendo ahora",
@@ -96,17 +107,11 @@ def create_embed(data, title, url, requester):
     duration = data.get("duration", 0)
     if duration:
         embed.add_field(name="⏱️ Duración", value=f"{duration // 60}:{duration % 60:02d}")
-        embed.add_field(name="⏱️ Progreso", value=progress_bar(0, duration), inline=False)
         embed.add_field(name="👤 Pedido por", value=requester.mention if requester else "Desconocido")
         embed.add_field(name="📜 Próximas canciones", value=format_queue(), inline=False)
     return embed
 
 async def extract_info_safe(url):
-    """
-    Extrae la info de stream de una URL.
-    Devuelve None si el video no está disponible o hay error,
-    en lugar de lanzar una excepción que corta la cola.
-    """
     try:
         data = await bot.loop.run_in_executor(
             None, lambda: ytdl.extract_info(url, download=False)
@@ -120,10 +125,6 @@ async def extract_info_safe(url):
         return None
 
 async def prefetch_next():
-    """
-    Pre-resuelve la URL de stream de la próxima canción en la cola
-    mientras la actual sigue sonando, para que no haya pausa entre canciones.
-    """
     if not queue:
         return
     next_song = queue[0]
@@ -193,22 +194,6 @@ async def refresh_panel(ctx, embed, view):
         pass
     now_playing_message = await ctx.send(embed=embed, view=view)
 
-async def update_progress_bar(vc, message, duration):
-    current = 0
-    while current < duration:
-        await asyncio.sleep(5)
-        if vc.is_paused():
-            continue
-        if not vc.is_playing() and not vc.is_paused():
-            break
-        current += 5
-        try:
-            embed = message.embeds[0]
-            embed.set_field_at(1, name="⏱️ Progreso", value=progress_bar(current, duration), inline=False)
-            await message.edit(embed=embed)
-        except Exception:
-            break
-
 async def update_queue_panel():
     global now_playing_message
     if not now_playing_message:
@@ -231,105 +216,80 @@ async def play_next(ctx):
         is_playing = False
         return
 
-    while queue:
-        song = queue[0]
-        url = song["url"]
+    if not queue:
+        is_playing = False
+        await asyncio.sleep(180)
 
-        if url in prefetch_cache:
-            data = prefetch_cache.pop(url)
-        else:
-            data = await extract_info_safe(url)
+        if not queue and vc and vc.is_connected() and not vc.is_playing():
+            await vc.disconnect()
+            await ctx.send("🔇 Me he desconectado del canal de voz debido a la inactividad.")
+        return
 
-        if data is None:
-            skipped = queue.pop(0)
-            logger.info(f"Canción no disponible, saltada automáticamente: {skipped['title']}")
-            continue
+    song = queue.pop(0)
+    url = song["url"]
 
-        queue.pop(0)
-        is_playing = True
+    data = await extract_info_safe(url)
+    if data is None:
+        logger.info(f"Canción no disponible, saltada automáticamente: {song['title']}")
+        await play_next(ctx)
+        return
 
-        title = song["title"]
-        requester = song["requester"]
+    is_playing = True
+    title = song["title"]
+    requester = song["requester"]
 
-        stream_url = data.get("url")
-        if not stream_url:
-            for fmt in reversed(data.get("formats", [])):
-                if fmt.get("acodec") != "none" and fmt.get("url"):
-                    stream_url = fmt["url"]
-                    break
+    stream_url = data.get("url")
+    if not stream_url:
+        for fmt in reversed(data.get("formats", [])):
+            if fmt.get("acodec") != "none" and fmt.get("url"):
+                stream_url = fmt["url"]
+                break
 
-        if not stream_url:
-            logger.warning(f"No se encontró URL de stream para: {url}")
-            continue
+    if not stream_url:
+        logger.warning(f"No se encontró URL de stream para: {url}")
+        await play_next(ctx)
+        return
 
-        source = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(
-                stream_url,
-                executable=FFMPEG_PATH,
-                before_options=ffmpeg_before_options,
-                **ffmpeg_options
-            ),
-            volume=volume
+    if vc.is_playing() or vc.is_paused():
+        try:
+            vc.stop()
+        except Exception:
+            pass
+
+    try:
+        raw_audio = discord.FFmpegPCMAudio(
+            stream_url,
+            executable=FFMPEG_PATH,
+            before_options=ffmpeg_before_options,
+            **ffmpeg_options
         )
+        
+        source = discord.PCMVolumeTransformer(raw_audio, volume=volume)
 
         def after_playing(error):
             if error:
                 logger.error(f"Error durante reproducción: {error}")
-            fut = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
-            try:
-                fut.result()
-            except Exception as e:
-                logger.error(f"Error en after_playing: {e}")
+            bot.loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(play_next(ctx), loop=bot.loop)
+            )
 
         vc.play(source, after=after_playing)
-
+        
         embed = create_embed(data, title, url, requester)
         view = PlayerControls(vc)
         await refresh_panel(ctx, embed, view)
 
-        duration = data.get("duration", 0)
-        if duration and now_playing_message:
-            bot.loop.create_task(update_progress_bar(vc, now_playing_message, duration))
+        await prefetch_next()
 
-        bot.loop.create_task(prefetch_next())
-        return
-
-    is_playing = False
-    if vc and vc.is_connected():
-        bot.loop.create_task(auto_disconnect_if_idle(vc, delay=180))
-
-async def auto_disconnect_if_idle(vc, delay=180):
-    await asyncio.sleep(delay)
-    try:
-        if vc and vc.is_connected() and not vc.is_playing() and not queue:
-            await vc.disconnect()
-            logger.info("Desconectado por inactividad (cola vacía)")
     except Exception as e:
-        logger.error(f"Auto-disconnect error: {e}")
+        logger.error(f"Error crítico al intentar reproducir {title}: {e}")
+        is_playing = False
+        await play_next(ctx)
 
-async def disconnect_if_alone(vc, delay=60):
-    global is_playing
-    await asyncio.sleep(delay)
-    try:
-        if vc and vc.is_connected():
-            members = [m for m in vc.channel.members if not m.bot]
-            if len(members) == 0:
-                if vc.is_playing() or vc.is_paused():
-                    vc.stop()
-                queue.clear()
-                prefetch_cache.clear()
-                is_playing = False
-                await vc.disconnect()
-                logger.info("Desconectado: canal vacío")
     except Exception as e:
-        logger.error(f"disconnect_if_alone error: {e}")
-
-async def delete_user_message_later(message, delay=10):
-    await asyncio.sleep(delay)
-    try:
-        await message.delete()
-    except Exception:
-        pass
+        logger.error(f"Error al intentar reproducir {title}: {e}")
+        is_playing = False
+        await play_next(ctx)
 
 # =========================
 # EVENTOS
@@ -341,60 +301,115 @@ async def on_ready():
 
 @bot.event
 async def on_voice_state_update(member, before, after):
+    global is_playing
+    
     vc = member.guild.voice_client
-    if vc and vc.channel:
-        members = [m for m in vc.channel.members if not m.bot]
-        if len(members) == 0:
-            bot.loop.create_task(disconnect_if_alone(vc))
+    if not vc:
+        return
+
+    if len(vc.channel.members) == 1:
+        logger.info(f"Bot se quedó solo en {vc.channel.name}. Desconectando...")
+        queue.clear()
+        prefetch_cache.clear()
+        is_playing = False
+        await vc.disconnect()
+        return
+
+    if member.id == bot.user.id and before.channel is not None and after.channel is None:
+        logger.info("El bot fue desconectado manualmente. Limpiando estados.")
+        queue.clear()
+        prefetch_cache.clear()
+        is_playing = False
 
 # =========================
 # COMANDOS
 # =========================
 
-@bot.command()
-async def play(ctx, *, url):
+@bot.command(name="play")
+async def play(ctx, *, search: str):
     global is_playing
-
-    if not ctx.voice_client:
-        await ctx.invoke(join)
-
-    bot.loop.create_task(delete_user_message_later(ctx.message, 10))
-
-    is_playlist = "list=" in url
-
-    try:
-        if is_playlist:
-            ytdl_playlist = yt_dlp.YoutubeDL(ytdl_opts_playlist)
-            data = await bot.loop.run_in_executor(
-                None, lambda: ytdl_playlist.extract_info(url, download=False)
-            )
-            count = 0
-            for entry in data.get("entries", []):
-                if not entry:
-                    continue
-                video_id = entry.get("id")
-                if not video_id:
-                    continue
-                video_url = f"https://www.youtube.com/watch?v={video_id}"
-                add_to_queue(video_url, entry.get("title", "Sin título"), ctx.author)
-                count += 1
-            await ctx.send(f"📜 Playlist agregada: **{count}** canciones")
-            await update_queue_panel()
-        else:
-            data = await bot.loop.run_in_executor(
-                None, lambda: ytdl.extract_info(url, download=False)
-            )
-            add_to_queue(url, data["title"], ctx.author)
-            await ctx.send(f"🎶 Agregado: **{data['title']}**")
-
-    except Exception as e:
-        await ctx.send(f"❌ Error al procesar: {e}")
+    
+    if not ctx.author.voice:
+        await ctx.send("❌ ¡Debes estar en un canal de voz para escuchar música!")
         return
 
-    if not is_playing:
-        await play_next(ctx)
+    vc = ctx.voice_client
+    if not vc:
+        try:
+            vc = await ctx.author.voice.channel.connect()
+        except Exception as e:
+            await ctx.send(f"❌ No pude conectarme al canal de voz: {e}")
+            return
+
+    waiting_msg = await ctx.send("🔍 Analizando enlace o búsqueda...")
+    search = search.strip("<>")
+
+    if "list=" in search:
+        try:
+            ydl_playlist = yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'skip_download': True})
+            data = await bot.loop.run_in_executor(
+                None, lambda: ydl_playlist.extract_info(search, download=False)
+            )
+            
+            if not data or 'entries' not in data:
+                await waiting_msg.edit(content="❌ No se pudo cargar la playlist o es privada.")
+                return
+
+            entries = list(data['entries'])
+            added_count = 0
+            
+            for entry in entries:
+                if entry:
+                    video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                    title = entry.get('title', 'Canción de Playlist')
+                    add_to_queue(video_url, title, ctx.author)
+                    added_count += 1
+
+            await waiting_msg.delete()
+            await ctx.send(f"🎶 ¡Se añadieron **{added_count}** canciones desde la playlist: **{data.get('title', 'Desconocida')}**!")
+            
+            if not vc.is_playing() and not vc.is_paused():
+                await play_next(ctx)
+            else:
+                await update_queue_panel()
+            return
+
+        except Exception as e:
+            logger.error(f"Error cargando playlist: {e}")
+            await waiting_msg.edit(content="❌ Ocurrió un error al procesar la lista de reproducción.")
+            return
+
     else:
-        await update_queue_panel()
+        if not search.startswith("http://") and not search.startswith("https://"):
+            query = f"ytsearch1:{search}"
+        else:
+            query = search
+
+        data = await extract_info_safe(query)
+        
+        if not data:
+            await waiting_msg.edit(content="❌ No se encontró la canción o el video no está disponible.")
+            return
+
+        if 'entries' in data:
+            if len(data['entries']) == 0:
+                await waiting_msg.edit(content="❌ No se encontraron resultados.")
+                return
+            video_data = data['entries'][0]
+        else:
+            video_data = data
+
+        video_url = video_data.get('webpage_url') or f"https://www.youtube.com/watch?v={video_data.get('id')}"
+        video_title = video_data.get('title', 'Canción sin título')
+
+        add_to_queue(video_url, video_title, ctx.author)
+        await waiting_msg.delete()
+
+        if not vc.is_playing() and not vc.is_paused():
+            await play_next(ctx)
+        else:
+            await ctx.send(f"✅ Añadida a la cola: **{video_title}**")
+            await update_queue_panel()
 
 @bot.command()
 async def skip(ctx):
