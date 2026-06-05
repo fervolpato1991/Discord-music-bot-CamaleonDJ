@@ -3,6 +3,7 @@ import asyncio
 import discord
 import yt_dlp
 import logging
+import sys
 from dotenv import load_dotenv
 from discord.ext import commands
 
@@ -498,10 +499,41 @@ async def volume_cmd(ctx, vol: int):
 
 @bot.command()
 async def shutdown(ctx):
+    await ctx.send("🔴 Apagando CamaleonDJ...")
+    logger.info("Apagado completo solicitado por el dueño.")
+    
+    if ctx.voice_client:
+        try: await ctx.voice_client.disconnect()
+        except Exception: pass
+        
     with open("start.txt", "w") as f:
         f.write("OFF")
-    await ctx.send("🔴 Bot apagando...")
+        
     await bot.close()
+    sys.exit(0)
+
+@bot.command()
+async def restart(ctx):
+    await ctx.send("🔄 Reiniciando el servicio... Dame unos segundos.")
+    logger.info("Reinicio manual del servicio solicitado.")
+    
+    if ctx.voice_client:
+        try:
+            logger.info("Desconectando activamente del canal de voz antes del reinicio.")
+            await ctx.voice_client.disconnect(force=True)
+        except Exception as e:
+            logger.error(f"No se pudo desconectar el canal de voz en el reinicio: {e}")
+            
+    queue.clear()
+    prefetch_cache.clear()
+    
+    with open("start.txt", "w") as f:
+        f.write("ON")
+        
+    await asyncio.sleep(3)   
+    await bot.close()
+    sys.exit(1)
+
 
 # =========================
 
