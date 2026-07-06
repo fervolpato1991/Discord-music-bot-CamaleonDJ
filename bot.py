@@ -4,8 +4,12 @@ import discord
 import yt_dlp
 import logging
 import sys
+import spotipy
 from dotenv import load_dotenv
 from discord.ext import commands
+from spotipy.oauth2 import SpotifyClientCredentials
+from music.player import MusicPlayer
+from music.services.youtube import YoutubeService
 
 # =========================
 # CONFIG
@@ -19,6 +23,15 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
+
+spotify = spotipy.Spotify(
+    auth_manager=SpotifyClientCredentials(
+        client_id=SPOTIFY_CLIENT_ID,
+        client_secret=SPOTIFY_CLIENT_SECRET
+    )
+)
 
 ffmpeg_before_options = (
     '-reconnect 1 '
@@ -65,6 +78,8 @@ is_playing = False
 volume = 0.5
 now_playing_message = None
 prefetch_cache = {}
+player = MusicPlayer()
+youtube = YoutubeService()
 
 # =========================
 # LOGGING
@@ -97,19 +112,33 @@ def format_queue():
         text += f"... y {len(queue) - 5} más"
     return text
 
-def create_embed(data, title, url, requester):
+def create_embed(media, requester):
     embed = discord.Embed(
         title="🎵 Reproduciendo ahora",
-        description=f"[{title}]({url})",
+        description=f"[{media.title}]({media.webpage_url})",
         color=discord.Color.green()
     )
-    if "thumbnail" in data:
-        embed.set_thumbnail(url=data["thumbnail"])
-    duration = data.get("duration", 0)
-    if duration:
-        embed.add_field(name="⏱️ Duración", value=f"{duration // 60}:{duration % 60:02d}")
-        embed.add_field(name="👤 Pedido por", value=requester.mention if requester else "Desconocido")
-        embed.add_field(name="📜 Próximas canciones", value=format_queue(), inline=False)
+
+    if media.thumbnail:
+        embed.set_thumbnail(url=media.thumbnail)
+
+    if media.duration:
+        embed.add_field(
+            name="⏱️ Duración",
+            value=f"{media.duration // 60}:{media.duration % 60:02d}"
+        )
+
+    embed.add_field(
+        name="👤 Pedido por",
+        value=requester.mention if requester else "Desconocido"
+    )
+
+    embed.add_field(
+        name="📜 Próximas canciones",
+        value=format_queue(),
+        inline=False
+    )
+
     return embed
 
 async def extract_info_safe(url):
@@ -229,9 +258,15 @@ async def play_next(ctx):
     song = queue.pop(0)
     url = song["url"]
 
-    data = await extract_info_safe(url)
-    if data is None:
-        logger.info(f"Canción no disponible, saltada automáticamente: {song['title']}")
+    try:
+        media = await youtube.resolve_url(url)
+        media = await youtube.resolve_stream(media)
+        
+    except Exception as e:
+        logger.info(
+            f"Canción no disponible, saltada automáticamente: "
+            f"{song['title']} ({e})"
+        )
         await play_next(ctx)
         return
 
@@ -239,13 +274,8 @@ async def play_next(ctx):
     title = song["title"]
     requester = song["requester"]
 
-    stream_url = data.get("url")
-    if not stream_url:
-        for fmt in reversed(data.get("formats", [])):
-            if fmt.get("acodec") != "none" and fmt.get("url"):
-                stream_url = fmt["url"]
-                break
-
+    stream_url = media.stream_url
+    
     if not stream_url:
         logger.warning(f"No se encontró URL de stream para: {url}")
         await play_next(ctx)
@@ -276,7 +306,7 @@ async def play_next(ctx):
 
         vc.play(source, after=after_playing)
         
-        embed = create_embed(data, title, url, requester)
+        embed = create_embed(media, requester)
         view = PlayerControls(vc)
         await refresh_panel(ctx, embed, view)
 
@@ -343,9 +373,133 @@ async def play(ctx, *, search: str):
             return
 
     waiting_msg = await ctx.send("🔍 Analizando enlace o búsqueda...")
-    search = search.strip("<>")
+    search = search.strip("<>").strip()
 
-    if "list=" in search:
+    # ==========================================
+    # CASO A: ENLACES DE SPOTIFY (API PROXY PÚBLICA)
+    # ==========================================
+    if "spotify.com" in search:
+        import aiohttp
+        import re
+
+        try:
+            tracks_to_search = []
+            spotify_title = "Lista de Spotify"
+
+            match = re.search(r"spotify\.com/(playlist|album|track)/([a-zA-Z0-9]+)", search)
+            if not match:
+                await waiting_msg.edit(content="❌ Enlace de Spotify no reconocido.")
+                return
+                
+            tipo = match.group(1)
+            spotify_id = match.group(2)
+
+            api_url = f"https://spotify.com{tipo}s/{spotify_id}/tracks" if tipo == "playlist" else f"https://spotify.com{tipo}s/{spotify_id}"
+            
+            if tipo == "track":
+                api_url = f"https://spotify.comtracks/{spotify_id}"
+
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            }
+
+            proxy_url = f"https://spotify.com{tipo}/{spotify_id}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(proxy_url, headers=headers, timeout=15) as response:
+                    if response.status != 200:
+                        await waiting_msg.edit(content="❌ No se pudo conectar con los servidores de Spotify.")
+                        return
+                    html = await response.text()
+
+            raw_tracks = re.findall(r'\"name\":\"([^\"]+)\",\"artists\":\[\{\"name\":\"([^\"]+)\"', html)
+             
+            for t_name, a_name in raw_tracks:
+                clean_title = t_name.encode().decode('utf-8', 'ignore')
+                clean_artist = a_name.encode().decode('utf-8', 'ignore')
+                tracks_to_search.append(f"{clean_title} {clean_artist}")
+
+            tracks_to_search = list(dict.fromkeys(tracks_to_search))
+
+            if not tracks_to_search:
+                titles = re.findall(r'itemprop="name">([^<]+)<', html)
+                if titles:
+                    spotify_title = titles[0]
+                    tracks_to_search = titles[1:]
+
+            if not tracks_to_search:
+                await waiting_msg.edit(content="❌ No se pudieron extraer canciones. Asegúrate de que la playlist sea pública.")
+                return
+
+            # REPRODUCCIÓN AUTOMÁTICA DE LA PRIMERA CANCIÓN
+            primer_tema = tracks_to_search.pop(0)
+            yt_data = await extract_info_safe(f"ytsearch1:{primer_tema}")
+            
+            if yt_data and 'entries' in yt_data and yt_data['entries']:
+                video_data = yt_data['entries'][0]
+                video_url = (
+                    video_data.get("webpage_url")
+                    or video_data.get("original_url")
+                    or f"https://www.youtube.com/watch?v={video_data.get('id')}"
+                )
+                video_title = video_data.get('title', primer_tema)
+                
+                add_to_queue(video_url, video_title, ctx.author)
+                
+                if not vc.is_playing() and not vc.is_paused():
+                    await play_next(ctx)
+                    if not tracks_to_search:
+                        await waiting_msg.delete()
+                        return
+                else:
+                    if not tracks_to_search:
+                        await waiting_msg.delete()
+                        await ctx.send(f"✅ Añadida a la cola (vía Spotify): **{video_title}**")
+                        await update_queue_panel()
+                        return
+            else:
+                if not tracks_to_search:
+                    await waiting_msg.edit(content="❌ No se pudo encontrar la canción en YouTube.")
+                    return
+
+            # TAREA EN SEGUNDO PLANO: ENCOLAR EL RESTO DE LAS CANCIONES
+            async def procesar_playlist_background(lista_temas, mensaje_espera, nombre_lista):
+                added_count = 1
+                for track_name in lista_temas:
+                    await asyncio.sleep(3.0) 
+                    
+                    yt_data_bg = await extract_info_safe(f"ytsearch1:{track_name}")
+                    if yt_data_bg and 'entries' in yt_data_bg and yt_data_bg['entries']:
+                        video_data_bg = yt_data_bg['entries'][0]
+                        video_url_bg = (
+                            video_data_bg.get("webpage_url")
+                            or video_data_bg.get("original_url")
+                            or f"https://www.youtube.com/watch?v={video_data_bg.get('id')}"
+                        )
+                        video_title_bg = video_data_bg.get('title', track_name)
+                        
+                        add_to_queue(video_url_bg, video_title_bg, ctx.author)
+                        added_count += 1
+                
+                await update_queue_panel()
+                try:
+                    await mensaje_espera.delete()
+                except Exception:
+                    pass
+                await ctx.send(f"🎶 ¡Se cargó la lista de Spotify! **{added_count}** canciones añadidas a la cola.")
+
+            asyncio.create_task(procesar_playlist_background(tracks_to_search, waiting_msg, spotify_title))
+            return
+
+        except Exception as e:
+            logger.error(f"Error procesando Spotify: {e}")
+            await waiting_msg.edit(content="❌ Ocurrió un error inesperado al procesar Spotify.")
+            return
+
+    # ==========================================
+    # CASO B: PLAYLISTS DE YOUTUBE
+    # ==========================================
+    elif "list=" in search:
         try:
             ydl_playlist = yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'skip_download': True})
             data = await bot.loop.run_in_executor(
@@ -361,7 +515,11 @@ async def play(ctx, *, search: str):
             
             for entry in entries:
                 if entry:
-                    video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                    video_url = (
+                        video_data.get("webpage_url")
+                        or video_data.get("original_url")
+                        or f"https://www.youtube.com/watch?v={video_data.get('id')}"
+                    )
                     title = entry.get('title', 'Canción de Playlist')
                     add_to_queue(video_url, title, ctx.author)
                     added_count += 1
@@ -380,30 +538,30 @@ async def play(ctx, *, search: str):
             await waiting_msg.edit(content="❌ Ocurrió un error al procesar la lista de reproducción.")
             return
 
+    # ==========================================
+    # CASO C: BÚSQUEDA TRADICIONAL O VIDEO INDIVIDUAL DE YT
+    # ==========================================
     else:
-        if not search.startswith("http://") and not search.startswith("https://"):
-            query = f"ytsearch1:{search}"
+        # ------------------------------------------
+        # # Video individual o búsqueda
+        # # ------------------------------------------
+        # 
+        if "youtube.com" in search or "youtu.be" in search:
+            media = await youtube.resolve_url(search)
         else:
-            query = search
-
-        data = await extract_info_safe(query)
-        
-        if not data:
-            await waiting_msg.edit(content="❌ No se encontró la canción o el video no está disponible.")
-            return
-
-        if 'entries' in data:
-            if len(data['entries']) == 0:
+            result = await youtube.search_first(search)
+              
+            if result is None:
                 await waiting_msg.edit(content="❌ No se encontraron resultados.")
                 return
-            video_data = data['entries'][0]
-        else:
-            video_data = data
+              
+            media = await youtube.resolve_url(result.webpage_url)
 
-        video_url = video_data.get('webpage_url') or f"https://www.youtube.com/watch?v={video_data.get('id')}"
-        video_title = video_data.get('title', 'Canción sin título')
-
+        video_url = media.webpage_url
+        video_title = media.title
+          
         add_to_queue(video_url, video_title, ctx.author)
+
         await waiting_msg.delete()
 
         if not vc.is_playing() and not vc.is_paused():
