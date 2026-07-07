@@ -156,7 +156,7 @@ async def prefetch_next():
         data = await extract_info_safe(url)
         prefetch_cache[url] = data
 
-async def resolve_spotify_track(track, sem):
+async def resolve_spotify_track(index, track, sem):
 
     async with sem:
 
@@ -167,6 +167,7 @@ async def resolve_spotify_track(track, sem):
             )
 
             return (
+                index,
                 track,
                 result,
             )
@@ -174,11 +175,12 @@ async def resolve_spotify_track(track, sem):
         except Exception as e:
 
             logger.warning(
-                f"No se encontró en YouTube: "
+                f"No se encontró: "
                 f"{track.title} - {track.artist} ({e})"
             )
 
             return (
+                index,
                 track,
                 None,
             )
@@ -446,46 +448,56 @@ async def play(ctx, *, search: str):
             sem = asyncio.Semaphore(20)
 
             tasks = [
-                resolve_spotify_track(track, sem)
-                for track in spotify_tracks
+                resolve_spotify_track(i, track, sem)
+                for i, track in enumerate(spotify_tracks)
             ]
 
             results = await asyncio.gather(*tasks)
+            
+            results.sort(key=lambda x: x[0])
 
             added = 0
             processed = 0
             total = len(results)
-
-            for spotify_track, result in results:
-
+            
+            for index, spotify_track, result in results:
+                
                 processed += 1
-
+                
                 if processed % 10 == 0 or processed == total:
 
                     try:
+                        
                         await waiting_msg.edit(
                             content=f"🔍 Preparando canciones... {processed}/{total}"
                         )
                     except Exception:
                         pass
-
+                    
                 if result is None:
                     continue
-
+                
                 add_to_queue(
                     result.webpage_url,
                     result.title,
-                    ctx.author
+                    ctx.author       
                 )
 
                 added += 1
+                
+                if (
+                    added == 1
+                    and not vc.is_playing()
+                    and not vc.is_paused()
+                ):
+                    await play_next(ctx)
 
             await waiting_msg.delete()
 
             if added == 0:
 
                 await ctx.send(
-                    "❌ No se encontró ninguna canción en YouTube."
+                    "❌ No se encontró ninguna canción."
                 )
 
                 return
@@ -494,13 +506,7 @@ async def play(ctx, *, search: str):
                 f"🎶 Se añadieron **{added}** canciones desde Spotify."
             )
 
-            if not vc.is_playing() and not vc.is_paused():
-
-                await play_next(ctx)
-
-            else:
-
-                await update_queue_panel()
+            await update_queue_panel()
 
             return
 
