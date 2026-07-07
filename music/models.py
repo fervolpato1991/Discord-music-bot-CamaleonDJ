@@ -82,3 +82,20 @@ class SearchResult:
     thumbnail: str | None
 
     video_id: str | None
+
+@dataclass(slots=True)
+
+class SpotifyTrack:
+    id: str = ""
+
+    title: str = ""
+
+    artist: str = ""
+
+    album: str = ""
+
+    duration: int = 0
+
+    thumbnail: str = ""
+    
+    external_url: str = ""

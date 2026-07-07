@@ -10,9 +10,6 @@ from music.settings import YTDLP_OPTIONS
 
 
 class YoutubeService:
-    """
-    Servicio encargado de toda la interacción con YouTube mediante yt-dlp.
-    """
 
     def __init__(self) -> None:
         self._ydl = yt_dlp.YoutubeDL(YTDLP_OPTIONS)
@@ -69,12 +66,6 @@ class YoutubeService:
         return media_list
 
     async def resolve_stream(self, media: Media) -> Media:
-        """
-        Obtiene la URL real del stream de audio.
-
-        Siempre se ejecuta justo antes de reproducir para evitar
-        utilizar URLs expiradas.
-        """
 
         try:
 
