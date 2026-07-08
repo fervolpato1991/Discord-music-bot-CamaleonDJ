@@ -4,6 +4,8 @@ from spotify_scraper import AsyncSpotifyClient
 
 from music.models import SpotifyTrack
 
+from urllib.parse import urlparse
+
 
 class SpotifyService:
 
@@ -65,3 +67,38 @@ class SpotifyService:
             )
 
         return tracks
+    
+    async def resolve(
+        self,
+        url: str,
+    ) -> list[SpotifyTrack]:
+        
+        parsed = urlparse(url)
+        
+        parts = parsed.path.strip("/").split("/")
+        
+        if parts and parts[0].startswith("intl-"):
+            parts = parts[1:]
+            
+        if len(parts) < 2:
+            raise ValueError("Enlace de Spotify inválido.")
+        
+        tipo = parts[0]
+        
+        if tipo == "track":
+            
+            return [
+                await self.resolve_track(url)
+            ]
+        
+        if tipo == "album":
+            
+            return await self.resolve_album(url)
+        
+        if tipo == "playlist":
+            
+            return await self.resolve_playlist(url)
+        
+        raise ValueError(
+            f"Tipo de Spotify no soportado: {tipo}"
+        )

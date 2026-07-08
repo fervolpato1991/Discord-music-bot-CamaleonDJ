@@ -6,10 +6,13 @@ import logging
 import sys
 from dotenv import load_dotenv
 from discord.ext import commands
+from urllib.parse import urlparse
 from music.player import MusicPlayer
 from music.services.youtube import YoutubeService
 from music.services.spotify import SpotifyService
-from urllib.parse import urlparse
+from music.services.media_resolver import MediaResolver
+from music.services.media_loader import MediaLoader
+from music.queue_manager import QueueManager
 
 # =========================
 # CONFIG
@@ -64,7 +67,6 @@ ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 # ESTADO GLOBAL
 # =========================
 
-queue = []
 is_playing = False
 volume = 0.5
 now_playing_message = None
@@ -72,6 +74,9 @@ prefetch_cache = {}
 player = MusicPlayer()
 youtube = YoutubeService()
 spotify = SpotifyService()
+resolver = MediaResolver()
+loader = MediaLoader()
+queue_manager = QueueManager()
 
 # =========================
 # LOGGING
@@ -92,16 +97,30 @@ logger = logging.getLogger(__name__)
 # =========================
 
 def add_to_queue(url, title, requester):
-    queue.append({"url": url, "title": title, "requester": requester})
+
+    queue_manager.add(
+        {
+            "url": url,
+            "title": title,
+            "requester": requester,
+        }
+    )
 
 def format_queue():
-    if not queue:
+
+    items = queue_manager.items()
+
+    if not items:
         return "Vacía"
+
     text = ""
-    for i, song in enumerate(queue[:5]):
+
+    for i, song in enumerate(items[:5]):
         text += f"`{i+1}.` {song['title']}\n"
-    if len(queue) > 5:
-        text += f"... y {len(queue) - 5} más"
+
+    if len(items) > 5:
+        text += f"... y {len(items) - 5} más"
+
     return text
 
 def create_embed(media, requester):
@@ -147,10 +166,13 @@ async def extract_info_safe(url):
         return None
 
 async def prefetch_next():
-    if not queue:
+    if queue_manager.empty():
+        
         return
-    next_song = queue[0]
+    
+    next_song = queue_manager.peek()
     url = next_song["url"]
+
     if url not in prefetch_cache:
         logger.info(f"Pre-fetcheando: {next_song['title']}")
         data = await extract_info_safe(url)
@@ -227,7 +249,7 @@ class PlayerControls(discord.ui.View):
         global is_playing
         vc = self.vc
         if vc:
-            queue.clear()
+            queue_manager.clear()
             prefetch_cache.clear()
             is_playing = False
             vc.stop()
@@ -268,16 +290,21 @@ async def play_next(ctx):
         is_playing = False
         return
 
-    if not queue:
+    if queue_manager.empty():
         is_playing = False
         await asyncio.sleep(180)
 
-        if not queue and vc and vc.is_connected() and not vc.is_playing():
+        if (
+            queue_manager.empty()
+            and vc
+            and vc.is_connected()
+            and not vc.is_playing()
+            ):
             await vc.disconnect()
             await ctx.send("🔇 Me he desconectado del canal de voz debido a la inactividad.")
         return
 
-    song = queue.pop(0)
+    song = queue_manager.next()
     url = song["url"]
 
     try:
@@ -362,7 +389,7 @@ async def on_voice_state_update(member, before, after):
 
     if len(vc.channel.members) == 1:
         logger.info(f"Bot se quedó solo en {vc.channel.name}. Desconectando...")
-        queue.clear()
+        queue_manager.clear()
         prefetch_cache.clear()
         is_playing = False
         await vc.disconnect()
@@ -370,7 +397,7 @@ async def on_voice_state_update(member, before, after):
 
     if member.id == bot.user.id and before.channel is not None and after.channel is None:
         logger.info("El bot fue desconectado manualmente. Limpiando estados.")
-        queue.clear()
+        queue_manager.clear()
         prefetch_cache.clear()
         is_playing = False
 
@@ -420,69 +447,30 @@ async def play(ctx, *, search: str):
 
             tipo = parts[0]
 
-            if tipo == "track":
-
-                spotify_tracks = [
-                    await spotify.resolve_track(search)
-                ]
-
-            elif tipo == "album":
-
-                spotify_tracks = await spotify.resolve_album(search)
-
-            elif tipo == "playlist":
-
-                spotify_tracks = await spotify.resolve_playlist(search)
-
-            else:
-
-                await waiting_msg.edit(
-                    content="❌ Tipo de enlace de Spotify no soportado."
-                )
-                return
+            spotify_tracks = await spotify.resolve(search)
 
             # ==========================================
             # BÚSQUEDA CONCURRENTE EN YOUTUBE
             # ==========================================
 
-            sem = asyncio.Semaphore(20)
-
-            tasks = [
-                resolve_spotify_track(i, track, sem)
-                for i, track in enumerate(spotify_tracks)
-            ]
-
-            results = await asyncio.gather(*tasks)
+            await waiting_msg.edit(
+                content="🔍 Buscando canciones..."
+            )
             
-            results.sort(key=lambda x: x[0])
-
+            media_list = await loader.load_spotify_tracks(
+                spotify_tracks
+            )
+            
             added = 0
-            processed = 0
-            total = len(results)
             
-            for index, spotify_track, result in results:
-                
-                processed += 1
-                
-                if processed % 10 == 0 or processed == total:
-
-                    try:
-                        
-                        await waiting_msg.edit(
-                            content=f"🔍 Preparando canciones... {processed}/{total}"
-                        )
-                    except Exception:
-                        pass
-                    
-                if result is None:
-                    continue
+            for media in media_list:
                 
                 add_to_queue(
-                    result.webpage_url,
-                    result.title,
-                    ctx.author       
+                    media.webpage_url,
+                    media.title,
+                    ctx.author
                 )
-
+                
                 added += 1
                 
                 if (
@@ -613,7 +601,7 @@ async def stop(ctx):
     global is_playing
     vc = ctx.voice_client
     if vc:
-        queue.clear()
+        queue_manager.clear()
         prefetch_cache.clear()
         is_playing = False
         vc.stop()
@@ -644,7 +632,7 @@ async def resume(ctx):
 async def leave(ctx):
     vc = ctx.voice_client
     if vc:
-        queue.clear()
+        queue_manager.clear()
         prefetch_cache.clear()
         vc.stop()
         await vc.disconnect()
@@ -659,12 +647,21 @@ async def join(ctx):
 @bot.command(name="queue")
 async def queue_cmd(ctx):
     """Muestra la cola completa."""
-    if not queue:
+    items = queue_manager.items()
+    
+    if not items:
         await ctx.send("La cola está vacía.")
         return
-    text = "\n".join([f"`{i + 1}.` {s['title']}" for i, s in enumerate(queue[:15])])
-    if len(queue) > 15:
-        text += f"\n... y {len(queue) - 15} más"
+    
+    text = "\n".join(
+    [
+        f"`{i + 1}.` {s['title']}"
+        for i, s in enumerate(items[:15])
+    ]
+)
+
+    if len(items) > 15:
+        text += f"\n... y {len(items) - 15} más"
     embed = discord.Embed(title="📜 Cola de reproducción", description=text, color=discord.Color.blue())
     await ctx.send(embed=embed)
 
@@ -708,7 +705,7 @@ async def restart(ctx):
         except Exception as e:
             logger.error(f"No se pudo desconectar el canal de voz en el reinicio: {e}")
             
-    queue.clear()
+    queue_manager.clear()
     prefetch_cache.clear()
     
     with open("start.txt", "w") as f:
@@ -718,6 +715,14 @@ async def restart(ctx):
     await bot.close()
     sys.exit(1)
 
+@bot.command()
+async def testresolver(ctx, *, search):
+
+    tipo, resultado = await resolver.resolve(search)
+
+    await ctx.send(
+        f"{tipo} -> {type(resultado)}"
+    )
 
 # =========================
 
