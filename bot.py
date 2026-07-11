@@ -8,11 +8,9 @@ from dotenv import load_dotenv
 from discord.ext import commands
 from urllib.parse import urlparse
 from music.player import MusicPlayer
-from music.services.youtube import YoutubeService
-from music.services.spotify import SpotifyService
-from music.services.media_resolver import MediaResolver
-from music.services.media_loader import MediaLoader
 from music.queue_manager import QueueManager
+from music.player_state import PlayerState
+from music.services.music_services import MusicServices
 
 # =========================
 # CONFIG
@@ -67,15 +65,9 @@ ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 # ESTADO GLOBAL
 # =========================
 
-is_playing = False
-volume = 0.5
-now_playing_message = None
-prefetch_cache = {}
+player_state = PlayerState()
 player = MusicPlayer()
-youtube = YoutubeService()
-spotify = SpotifyService()
-resolver = MediaResolver()
-loader = MediaLoader()
+services = MusicServices()
 queue_manager = QueueManager()
 
 # =========================
@@ -173,10 +165,10 @@ async def prefetch_next():
     next_song = queue_manager.peek()
     url = next_song["url"]
 
-    if url not in prefetch_cache:
+    if url not in player_state.prefetch_cache:
         logger.info(f"Pre-fetcheando: {next_song['title']}")
         data = await extract_info_safe(url)
-        prefetch_cache[url] = data
+        player_state.prefetch_cache[url] = data
 
 async def resolve_spotify_track(index, track, sem):
 
@@ -184,7 +176,7 @@ async def resolve_spotify_track(index, track, sem):
 
         try:
 
-            result = await youtube.search_first(
+            result = await services.youtube.search_first(
                 f"{track.title} {track.artist}"
             )
 
@@ -207,6 +199,230 @@ async def resolve_spotify_track(index, track, sem):
                 None,
             )
 
+async def handle_spotify(
+    ctx,
+    vc,
+    waiting_msg,
+    search,
+):
+    try:
+
+        await waiting_msg.edit(
+            content="🎵 Leyendo contenido de Spotify..."
+        )
+
+        parsed = urlparse(search)
+        parts = parsed.path.strip("/").split("/")
+
+        if parts and parts[0].startswith("intl-"):
+            parts = parts[1:]
+
+        if len(parts) < 2:
+            await waiting_msg.edit(
+                content="❌ Enlace de Spotify no reconocido."
+            )
+            return
+
+        spotify_tracks = await services.spotify.resolve(search)
+
+        await waiting_msg.edit(
+            content="🔍 Buscando canciones..."
+        )
+
+        media_list = await services.loader.load_spotify_tracks(
+            spotify_tracks
+        )
+
+        added = 0
+
+        for media in media_list:
+
+            add_to_queue(
+                media.webpage_url,
+                media.title,
+                ctx.author,
+            )
+
+            added += 1
+
+            if (
+                added == 1
+                and not vc.is_playing()
+                and not vc.is_paused()
+            ):
+                await play_next(ctx)
+
+        await waiting_msg.delete()
+
+        if added == 0:
+
+            await ctx.send(
+                "❌ No se encontró ninguna canción."
+            )
+            return
+
+        await ctx.send(
+            f"🎶 Se añadieron **{added}** canciones desde Spotify."
+        )
+
+        await update_queue_panel()
+
+    except Exception as e:
+
+        logger.exception(e)
+
+        try:
+            await waiting_msg.edit(
+                content="❌ Error procesando Spotify."
+            )
+        except Exception:
+            pass
+
+async def handle_youtube_playlist(
+    ctx,
+    vc,
+    waiting_msg,
+    search,
+):
+    try:
+
+        data = await bot.loop.run_in_executor(
+            None,
+            lambda: yt_dlp.YoutubeDL(
+                {
+                    "quiet": True,
+                    "extract_flat": True,
+                    "skip_download": True,
+                }
+            ).extract_info(
+                search,
+                download=False,
+            ),
+        )
+
+        if not data or "entries" not in data:
+
+            await waiting_msg.edit(
+                content="❌ No se pudo cargar la playlist o es privada."
+            )
+
+            return
+
+        entries = list(data["entries"])
+
+        added = 0
+
+        for entry in entries:
+
+            if not entry:
+                continue
+
+            video_url = (
+                entry.get("url")
+                or entry.get("webpage_url")
+                or f"https://www.youtube.com/watch?v={entry.get('id')}"
+            )
+
+            title = entry.get(
+                "title",
+                "Canción de Playlist",
+            )
+
+            add_to_queue(
+                video_url,
+                title,
+                ctx.author,
+            )
+
+            added += 1
+
+        await waiting_msg.delete()
+
+        await ctx.send(
+            f"🎶 ¡Se añadieron **{added}** canciones desde la playlist: **{data.get('title', 'Desconocida')}**!"
+        )
+
+        if not vc.is_playing() and not vc.is_paused():
+
+            await play_next(ctx)
+
+        else:
+
+            await update_queue_panel()
+
+    except Exception as e:
+
+        logger.exception(e)
+
+        try:
+
+            await waiting_msg.edit(
+                content="❌ Ocurrió un error al procesar la playlist."
+            )
+
+        except Exception:
+            pass
+
+async def handle_youtube_media(
+    ctx,
+    vc,
+    waiting_msg,
+    search,
+):
+    try:
+
+        if "youtube.com" in search or "youtu.be" in search:
+
+            media = await services.youtube.resolve_url(search)
+
+        else:
+
+            result = await services.youtube.search_first(search)
+
+            if result is None:
+
+                await waiting_msg.edit(
+                    content="❌ No se encontraron resultados."
+                )
+
+                return
+
+            media = await services.youtube.resolve_url(
+                result.webpage_url
+            )
+
+        add_to_queue(
+            media.webpage_url,
+            media.title,
+            ctx.author,
+        )
+
+        await waiting_msg.delete()
+
+        if not vc.is_playing() and not vc.is_paused():
+
+            await play_next(ctx)
+
+        else:
+
+            await ctx.send(
+                f"✅ Añadida a la cola: **{media.title}**"
+            )
+
+            await update_queue_panel()
+
+    except Exception as e:
+
+        logger.exception(e)
+
+        try:
+
+            await waiting_msg.edit(
+                content="❌ Error procesando la búsqueda."
+            )
+
+        except Exception:
+            pass
 
 # =========================
 # UI
@@ -243,16 +459,18 @@ class PlayerControls(discord.ui.View):
         if self.vc.is_playing() or self.vc.is_paused():
             self.vc.stop()
         await interaction.response.defer()
-
+        
     @discord.ui.button(label="⏹️", style=discord.ButtonStyle.grey)
-    async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        global is_playing
-        vc = self.vc
-        if vc:
+    async def stop_btn(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+        ):
+        
+        if self.vc:
             queue_manager.clear()
-            prefetch_cache.clear()
-            is_playing = False
-            vc.stop()
+            player_state.prefetch_cache.clear()
+            self.vc.stop()
         await interaction.response.defer()
 
 # =========================
@@ -283,15 +501,13 @@ async def update_queue_panel():
         pass
 
 async def play_next(ctx):
-    global is_playing
+    
     vc = ctx.voice_client
 
     if not vc or not vc.is_connected():
-        is_playing = False
         return
 
     if queue_manager.empty():
-        is_playing = False
         await asyncio.sleep(180)
 
         if (
@@ -308,8 +524,8 @@ async def play_next(ctx):
     url = song["url"]
 
     try:
-        media = await youtube.resolve_url(url)
-        media = await youtube.resolve_stream(media)
+        media = await services.youtube.resolve_url(url)
+        media = await services.youtube.resolve_stream(media)
         
     except Exception as e:
         logger.info(
@@ -319,7 +535,6 @@ async def play_next(ctx):
         await play_next(ctx)
         return
 
-    is_playing = True
     title = song["title"]
     requester = song["requester"]
 
@@ -344,7 +559,7 @@ async def play_next(ctx):
             **ffmpeg_options
         )
         
-        source = discord.PCMVolumeTransformer(raw_audio, volume=volume)
+        source = discord.PCMVolumeTransformer(raw_audio, volume=player_state.volume)
 
         def after_playing(error):
             if error:
@@ -363,12 +578,6 @@ async def play_next(ctx):
 
     except Exception as e:
         logger.error(f"Error crítico al intentar reproducir {title}: {e}")
-        is_playing = False
-        await play_next(ctx)
-
-    except Exception as e:
-        logger.error(f"Error al intentar reproducir {title}: {e}")
-        is_playing = False
         await play_next(ctx)
 
 # =========================
@@ -381,33 +590,41 @@ async def on_ready():
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    global is_playing
-    
+
     vc = member.guild.voice_client
+
     if not vc:
         return
 
     if len(vc.channel.members) == 1:
-        logger.info(f"Bot se quedó solo en {vc.channel.name}. Desconectando...")
+        logger.info(
+            f"Bot se quedó solo en {vc.channel.name}. Desconectando..."
+        )
+
         queue_manager.clear()
-        prefetch_cache.clear()
-        is_playing = False
+        player_state.prefetch_cache.clear()
+
         await vc.disconnect()
         return
 
-    if member.id == bot.user.id and before.channel is not None and after.channel is None:
-        logger.info("El bot fue desconectado manualmente. Limpiando estados.")
+    if (
+        member.id == bot.user.id
+        and before.channel is not None
+        and after.channel is None
+    ):
+        logger.info(
+            "El bot fue desconectado manualmente. Limpiando estados."
+        )
+
         queue_manager.clear()
-        prefetch_cache.clear()
-        is_playing = False
+        player_state.prefetch_cache.clear()
 
 # =========================
 # COMANDOS
 # =========================
 
 @bot.command(name="play")
-async def play(ctx, *, search: str):
-    global is_playing
+async def play(ctx, *, search: str):   
     
     if not ctx.author.voice:
         await ctx.send("❌ ¡Debes estar en un canal de voz para escuchar música!")
@@ -424,165 +641,37 @@ async def play(ctx, *, search: str):
     waiting_msg = await ctx.send("🔍 Analizando enlace o búsqueda...")
     search = search.strip("<>").strip()
 
-    # ==========================================
-    # CASO A: ENLACES DE SPOTIFY (API PROXY PÚBLICA)
-    # ==========================================
     if "spotify.com" in search:
-        try:
-            waiting_msg = await ctx.send(
-                "🎵 Leyendo contenido de Spotify..."
-            )
+        
+        await handle_spotify(
+            ctx,
+            vc,
+            waiting_msg,
+            search,
+        )
 
-            parsed = urlparse(search)
-            parts = parsed.path.strip("/").split("/")
+        return
 
-            if parts and parts[0].startswith("intl-"):
-                parts = parts[1:]
-
-            if len(parts) < 2:
-                await waiting_msg.edit(
-                    content="❌ Enlace de Spotify no reconocido."
-                )
-                return
-
-            tipo = parts[0]
-
-            spotify_tracks = await spotify.resolve(search)
-
-            # ==========================================
-            # BÚSQUEDA CONCURRENTE EN YOUTUBE
-            # ==========================================
-
-            await waiting_msg.edit(
-                content="🔍 Buscando canciones..."
-            )
-            
-            media_list = await loader.load_spotify_tracks(
-                spotify_tracks
-            )
-            
-            added = 0
-            
-            for media in media_list:
-                
-                add_to_queue(
-                    media.webpage_url,
-                    media.title,
-                    ctx.author
-                )
-                
-                added += 1
-                
-                if (
-                    added == 1
-                    and not vc.is_playing()
-                    and not vc.is_paused()
-                ):
-                    await play_next(ctx)
-
-            await waiting_msg.delete()
-
-            if added == 0:
-
-                await ctx.send(
-                    "❌ No se encontró ninguna canción."
-                )
-
-                return
-
-            await ctx.send(
-                f"🎶 Se añadieron **{added}** canciones desde Spotify."
-            )
-
-            await update_queue_panel()
-
-            return
-
-        except Exception as e:
-
-            logger.exception(e)
-
-            try:
-                await waiting_msg.edit(
-                    content="❌ Error procesando Spotify."
-                )
-            except Exception:
-                pass
-
-            return
-
-    # ==========================================
-    # CASO B: PLAYLISTS DE YOUTUBE
-    # ==========================================
     elif "list=" in search:
-        try:
-            ydl_playlist = yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'skip_download': True})
-            data = await bot.loop.run_in_executor(
-                None, lambda: ydl_playlist.extract_info(search, download=False)
-            )
-            
-            if not data or 'entries' not in data:
-                await waiting_msg.edit(content="❌ No se pudo cargar la playlist o es privada.")
-                return
+        
+        await handle_youtube_playlist(
+            ctx,
+            vc,
+            waiting_msg,
+            search,
+        )
 
-            entries = list(data['entries'])
-            added_count = 0
-            
-            for entry in entries:
-                if entry:
-                    video_url = (
-                        entry.get("url")
-                        or entry.get("webpage_url")
-                        or f"https://www.youtube.com/watch?v={entry.get('id')}"
-                    )
-                    title = entry.get('title', 'Canción de Playlist')
-                    add_to_queue(video_url, title, ctx.author)
-                    added_count += 1
+        return
 
-            await waiting_msg.delete()
-            await ctx.send(f"🎶 ¡Se añadieron **{added_count}** canciones desde la playlist: **{data.get('title', 'Desconocida')}**!")
-            
-            if not vc.is_playing() and not vc.is_paused():
-                await play_next(ctx)
-            else:
-                await update_queue_panel()
-            return
-
-        except Exception as e:
-            logger.error(f"Error cargando playlist: {e}")
-            await waiting_msg.edit(content="❌ Ocurrió un error al procesar la lista de reproducción.")
-            return
-
-    # ==========================================
-    # CASO C: BÚSQUEDA TRADICIONAL O VIDEO INDIVIDUAL DE YT
-    # ==========================================
     else:
-        # ------------------------------------------
-        # Video individual o búsqueda
-        # ------------------------------------------
-        if "youtube.com" in search or "youtu.be" in search:
-            media = await youtube.resolve_url(search)
-        else:
-            result = await youtube.search_first(search)
-              
-            if result is None:
-                await waiting_msg.edit(content="❌ No se encontraron resultados.")
-                return
-              
-            media = await youtube.resolve_url(result.webpage_url)
-
-        video_url = media.webpage_url
-        video_title = media.title
-          
-        add_to_queue(video_url, video_title, ctx.author)
-
-        await waiting_msg.delete()
-
-        if not vc.is_playing() and not vc.is_paused():
-            await play_next(ctx)
-        else:
-            await ctx.send(f"✅ Añadida a la cola: **{video_title}**")
-            await update_queue_panel()
+        await handle_youtube_media(
+            ctx,
+            vc,
+            waiting_msg,
+            search,
+        )
+        
+        return
 
 @bot.command()
 async def skip(ctx):
@@ -598,12 +687,10 @@ async def skip(ctx):
 
 @bot.command()
 async def stop(ctx):
-    global is_playing
     vc = ctx.voice_client
     if vc:
         queue_manager.clear()
-        prefetch_cache.clear()
-        is_playing = False
+        player_state.prefetch_cache.clear()
         vc.stop()
         await ctx.send("⏹️ Detenido y cola vaciada.")
 
@@ -633,16 +720,9 @@ async def leave(ctx):
     vc = ctx.voice_client
     if vc:
         queue_manager.clear()
-        prefetch_cache.clear()
+        player_state.prefetch_cache.clear()
         vc.stop()
         await vc.disconnect()
-
-@bot.command()
-async def join(ctx):
-    if ctx.author.voice:
-        await ctx.author.voice.channel.connect()
-    else:
-        await ctx.send("Tenés que estar en un canal de voz.")
 
 @bot.command(name="queue")
 async def queue_cmd(ctx):
@@ -668,15 +748,25 @@ async def queue_cmd(ctx):
 @bot.command(name="vol")
 async def volume_cmd(ctx, vol: int):
     """Ajusta el volumen (0-100). Ejemplo: !vol 80"""
-    global volume
+
     if 0 <= vol <= 100:
-        volume = vol / 100
+
+        player_state.volume = vol / 100
+
         vc = ctx.voice_client
+
         if vc and vc.source:
-            vc.source.volume = volume
-        await ctx.send(f"🔊 Volumen ajustado a **{vol}%**")
+            vc.source.volume = player_state.volume
+
+        await ctx.send(
+            f"🔊 Volumen ajustado a **{vol}%**"
+        )
+
     else:
-        await ctx.send("El volumen debe estar entre **0** y **100**.")
+
+        await ctx.send(
+            "El volumen debe estar entre **0** y **100**."
+        ) 
 
 @bot.command()
 async def shutdown(ctx):
@@ -706,7 +796,7 @@ async def restart(ctx):
             logger.error(f"No se pudo desconectar el canal de voz en el reinicio: {e}")
             
     queue_manager.clear()
-    prefetch_cache.clear()
+    player_state.prefetch_cache.clear()
     
     with open("start.txt", "w") as f:
         f.write("ON")
@@ -716,13 +806,94 @@ async def restart(ctx):
     sys.exit(1)
 
 @bot.command()
-async def testresolver(ctx, *, search):
+async def shuffle(ctx):
 
-    tipo, resultado = await resolver.resolve(search)
+    if queue_manager.empty():
+        await ctx.send("❌ La cola está vacía.")
+        return
+
+    queue_manager.shuffle()
+
+    await update_queue_panel()
+
+    await ctx.send("🔀 Cola mezclada.")
+
+@bot.command()
+async def remove(ctx, position: int):
+
+    if queue_manager.empty():
+        await ctx.send("❌ La cola está vacía.")
+        return
+
+    position -= 1
+
+    song = queue_manager.remove(position)
+
+    if song is None:
+        await ctx.send("❌ Esa posición no existe.")
+        return
+
+    await update_queue_panel()
 
     await ctx.send(
-        f"{tipo} -> {type(resultado)}"
+        f"🗑 Eliminada de la cola:\n**{song['title']}**"
     )
+
+@bot.command()
+async def move(
+    ctx,
+    origin: int,
+    destination: int,
+):
+
+    if queue_manager.empty():
+        await ctx.send("❌ La cola está vacía.")
+        return
+
+    origin -= 1
+    destination -= 1
+
+    moved = queue_manager.move(
+        origin,
+        destination,
+    )
+
+    if moved is None:
+        await ctx.send("❌ Posición inválida.")
+        return
+
+    await update_queue_panel()
+
+    await ctx.send(
+        f"📦 Canción movida a la posición {destination + 1}."
+    )
+
+@bot.command()
+async def jump(ctx, position: int):
+
+    if queue_manager.empty():
+        await ctx.send("❌ La cola está vacía.")
+        return
+
+    result = queue_manager.jump(position - 1)
+
+    if result is None:
+        await ctx.send("❌ Esa posición no existe.")
+        return
+
+    song, skipped = result
+
+    await update_queue_panel()
+
+    vc = ctx.voice_client
+
+    if vc and (vc.is_playing() or vc.is_paused()):
+        vc.stop()
+
+    await ctx.send(
+        f"⏩ Saltando a **{song['title']}**"
+    )
+
 
 # =========================
 
