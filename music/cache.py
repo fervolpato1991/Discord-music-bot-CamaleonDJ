@@ -4,6 +4,10 @@ class MusicCache:
 
         self._cache = {}
 
+    # ==================================================
+    # Acceso
+    # ==================================================
+
     def has(self, key):
 
         return key in self._cache
@@ -16,6 +20,18 @@ class MusicCache:
 
         self._cache[key] = value
 
+    # ==================================================
+    # Estado
+    # ==================================================
+
     def clear(self):
 
         self._cache.clear()
+
+    def __contains__(self, key):
+
+        return key in self._cache
+
+    def __len__(self):
+
+        return len(self._cache)

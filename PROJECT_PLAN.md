@@ -61,6 +61,8 @@ Estas reglas tienen prioridad durante todo el proyecto.
 
 10. Antes de iniciar una nueva sesión de desarrollo se debe revisar este documento.
 
+11. Las optimizaciones de rendimiento deben integrarse en la arquitectura del proyecto y no resolverse mediante soluciones temporales o específicas para un único proveedor.
+
 ---
 
 # Arquitectura actual
@@ -92,9 +94,10 @@ MusicPlayer
 Estado: En progreso
 
 - [ ] Integrar completamente MusicPlayer.
-- [ ] Eliminar QueueManager.
+- [x] Eliminar QueueManager.
 - [ ] Eliminar prefetch_cache.
 - [ ] Centralizar el estado del reproductor.
+- [ ] Optimizar la carga de playlists (YouTube, Spotify y futuros proveedores).
 - [ ] Probar toda la reproducción.
 
 ---
@@ -147,7 +150,7 @@ Integrar completamente MusicPlayer para que sea el núcleo del bot.
 
 # Próximo paso
 
-Eliminar QueueManager migrando toda la gestión de la cola hacia MusicPlayer y MusicQueue.
+Eliminar prefetch_cache integrando completamente MusicCache dentro de MusicPlayer.
 
 ---
 
@@ -219,6 +222,7 @@ Adoptada.
 - Se creó MusicQueue.
 - Se creó MusicCache.
 - Se creó Song.
+- Se eliminó QueueManager y toda la gestión de la cola quedó centralizada en MusicQueue.
 
 ## Funcionalidades
 

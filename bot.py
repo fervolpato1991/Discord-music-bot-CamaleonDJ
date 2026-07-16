@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 from discord.ext import commands
 from urllib.parse import urlparse
 from music.player import MusicPlayer
-from music.player_state import PlayerState
 from music.services.music_services import MusicServices
 
 # =========================
@@ -64,7 +63,6 @@ ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 # ESTADO GLOBAL
 # =========================
 
-player_state = PlayerState()
 player = MusicPlayer()
 services = MusicServices()
 
@@ -156,17 +154,26 @@ async def extract_info_safe(url):
         return None
 
 async def prefetch_next():
+
     if player.queue.is_empty():
-        
         return
-    
+
     next_song = player.queue.peek()
+
     url = next_song["url"]
 
-    if url not in player_state.prefetch_cache:
-        logger.info(f"Pre-fetcheando: {next_song['title']}")
+    if not player.cache.has(url):
+
+        logger.info(
+            f"Pre-fetcheando: {next_song['title']}"
+        )
+
         data = await extract_info_safe(url)
-        player_state.prefetch_cache[url] = data
+
+        player.cache.set(
+            url,
+            data,
+        )
 
 async def resolve_spotify_track(index, track, sem):
 
@@ -467,7 +474,7 @@ class PlayerControls(discord.ui.View):
         
         if self.vc:
             player.queue.clear()
-            player_state.prefetch_cache.clear()
+            player.cache.clear()
             self.vc.stop()
         await interaction.response.defer()
 
@@ -557,7 +564,7 @@ async def play_next(ctx):
             **ffmpeg_options
         )
         
-        source = discord.PCMVolumeTransformer(raw_audio, volume=player_state.volume)
+        source = discord.PCMVolumeTransformer(raw_audio, volume=player.volume)
 
         def after_playing(error):
             if error:
@@ -600,7 +607,7 @@ async def on_voice_state_update(member, before, after):
         )
 
         player.queue.clear()
-        player_state.prefetch_cache.clear()
+        player.cache.clear()
 
         await vc.disconnect()
         return
@@ -615,7 +622,7 @@ async def on_voice_state_update(member, before, after):
         )
 
         player.queue.clear()
-        player_state.prefetch_cache.clear()
+        player.cache.clear()
 
 # =========================
 # COMANDOS
@@ -688,7 +695,7 @@ async def stop(ctx):
     vc = ctx.voice_client
     if vc:
         player.queue.clear()
-        player_state.prefetch_cache.clear()
+        player.cache.clear()
         vc.stop()
         await ctx.send("⏹️ Detenido y cola vaciada.")
 
@@ -718,7 +725,7 @@ async def leave(ctx):
     vc = ctx.voice_client
     if vc:
         player.queue.clear()
-        player_state.prefetch_cache.clear()
+        player.cache.clear()
         vc.stop()
         await vc.disconnect()
 
@@ -749,12 +756,12 @@ async def volume_cmd(ctx, vol: int):
 
     if 0 <= vol <= 100:
 
-        player_state.volume = vol / 100
+        player.volume = vol / 100
 
         vc = ctx.voice_client
 
         if vc and vc.source:
-            vc.source.volume = player_state.volume
+            vc.source.volume = player.volume
 
         await ctx.send(
             f"🔊 Volumen ajustado a **{vol}%**"
@@ -794,7 +801,7 @@ async def restart(ctx):
             logger.error(f"No se pudo desconectar el canal de voz en el reinicio: {e}")
             
     player.queue.clear()
-    player_state.prefetch_cache.clear()
+    player.cache.clear()
     
     with open("start.txt", "w") as f:
         f.write("ON")
