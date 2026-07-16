@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 from discord.ext import commands
 from urllib.parse import urlparse
 from music.player import MusicPlayer
-from music.queue_manager import QueueManager
 from music.player_state import PlayerState
 from music.services.music_services import MusicServices
 
@@ -68,7 +67,6 @@ ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 player_state = PlayerState()
 player = MusicPlayer()
 services = MusicServices()
-queue_manager = QueueManager()
 
 # =========================
 # LOGGING
@@ -90,7 +88,7 @@ logger = logging.getLogger(__name__)
 
 def add_to_queue(url, title, requester):
 
-    queue_manager.add(
+    player.queue.add(
         {
             "url": url,
             "title": title,
@@ -100,7 +98,7 @@ def add_to_queue(url, title, requester):
 
 def format_queue():
 
-    items = queue_manager.items()
+    items = player.queue.as_list()
 
     if not items:
         return "Vacía"
@@ -158,11 +156,11 @@ async def extract_info_safe(url):
         return None
 
 async def prefetch_next():
-    if queue_manager.empty():
+    if player.queue.is_empty():
         
         return
     
-    next_song = queue_manager.peek()
+    next_song = player.queue.peek()
     url = next_song["url"]
 
     if url not in player_state.prefetch_cache:
@@ -468,7 +466,7 @@ class PlayerControls(discord.ui.View):
         ):
         
         if self.vc:
-            queue_manager.clear()
+            player.queue.clear()
             player_state.prefetch_cache.clear()
             self.vc.stop()
         await interaction.response.defer()
@@ -507,11 +505,11 @@ async def play_next(ctx):
     if not vc or not vc.is_connected():
         return
 
-    if queue_manager.empty():
+    if player.queue.is_empty():
         await asyncio.sleep(180)
 
         if (
-            queue_manager.empty()
+            player.queue.is_empty()
             and vc
             and vc.is_connected()
             and not vc.is_playing()
@@ -520,7 +518,7 @@ async def play_next(ctx):
             await ctx.send("🔇 Me he desconectado del canal de voz debido a la inactividad.")
         return
 
-    song = queue_manager.next()
+    song = player.queue.next()
     url = song["url"]
 
     try:
@@ -601,7 +599,7 @@ async def on_voice_state_update(member, before, after):
             f"Bot se quedó solo en {vc.channel.name}. Desconectando..."
         )
 
-        queue_manager.clear()
+        player.queue.clear()
         player_state.prefetch_cache.clear()
 
         await vc.disconnect()
@@ -616,7 +614,7 @@ async def on_voice_state_update(member, before, after):
             "El bot fue desconectado manualmente. Limpiando estados."
         )
 
-        queue_manager.clear()
+        player.queue.clear()
         player_state.prefetch_cache.clear()
 
 # =========================
@@ -689,7 +687,7 @@ async def skip(ctx):
 async def stop(ctx):
     vc = ctx.voice_client
     if vc:
-        queue_manager.clear()
+        player.queue.clear()
         player_state.prefetch_cache.clear()
         vc.stop()
         await ctx.send("⏹️ Detenido y cola vaciada.")
@@ -719,7 +717,7 @@ async def resume(ctx):
 async def leave(ctx):
     vc = ctx.voice_client
     if vc:
-        queue_manager.clear()
+        player.queue.clear()
         player_state.prefetch_cache.clear()
         vc.stop()
         await vc.disconnect()
@@ -727,7 +725,7 @@ async def leave(ctx):
 @bot.command(name="queue")
 async def queue_cmd(ctx):
     """Muestra la cola completa."""
-    items = queue_manager.items()
+    items = player.queue.as_list()
     
     if not items:
         await ctx.send("La cola está vacía.")
@@ -795,7 +793,7 @@ async def restart(ctx):
         except Exception as e:
             logger.error(f"No se pudo desconectar el canal de voz en el reinicio: {e}")
             
-    queue_manager.clear()
+    player.queue.clear()
     player_state.prefetch_cache.clear()
     
     with open("start.txt", "w") as f:
@@ -808,11 +806,11 @@ async def restart(ctx):
 @bot.command()
 async def shuffle(ctx):
 
-    if queue_manager.empty():
+    if player.queue.is_empty():
         await ctx.send("❌ La cola está vacía.")
         return
 
-    queue_manager.shuffle()
+    player.queue.shuffle()
 
     await update_queue_panel()
 
@@ -821,13 +819,13 @@ async def shuffle(ctx):
 @bot.command()
 async def remove(ctx, position: int):
 
-    if queue_manager.empty():
+    if player.queue.is_empty():
         await ctx.send("❌ La cola está vacía.")
         return
 
     position -= 1
 
-    song = queue_manager.remove(position)
+    song = player.queue.remove(position)
 
     if song is None:
         await ctx.send("❌ Esa posición no existe.")
@@ -846,14 +844,14 @@ async def move(
     destination: int,
 ):
 
-    if queue_manager.empty():
+    if player.queue.is_empty():
         await ctx.send("❌ La cola está vacía.")
         return
 
     origin -= 1
     destination -= 1
 
-    moved = queue_manager.move(
+    moved = player.queue.move(
         origin,
         destination,
     )
@@ -871,11 +869,11 @@ async def move(
 @bot.command()
 async def jump(ctx, position: int):
 
-    if queue_manager.empty():
+    if player.queue.is_empty():
         await ctx.send("❌ La cola está vacía.")
         return
 
-    result = queue_manager.jump(position - 1)
+    result = player.queue.jump(position - 1)
 
     if result is None:
         await ctx.send("❌ Esa posición no existe.")
