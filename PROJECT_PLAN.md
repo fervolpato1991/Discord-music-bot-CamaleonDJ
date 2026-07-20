@@ -67,37 +67,59 @@ Estas reglas tienen prioridad durante todo el proyecto.
 
 # Arquitectura actual
 
-MusicPlayer
+bot.py
+    │
+    ├── MusicPlayer
+    ├── MusicQueue
+    ├── MusicCache
+    │
+    ├── YoutubeService
+    ├── SpotifyService
+    ├── MediaLoader
+    ├── MediaResolver
+    │
+    └── PlayerControls
 
-├── MusicQueue
-
-├── MusicCache
-
-├── Song
-
-├── YoutubeService
-
-├── SpotifyService
-
-├── MediaResolver
-
-├── MediaLoader
-
-└── Discord UI
+MusicQueue: administra exclusivamente la cola de reproducción.
+MusicCache: almacena información temporal de medios.
+YoutubeService: búsquedas, resolución de URLs y streams.
+SpotifyService: obtiene canciones, álbumes y playlists desde Spotify.
+MediaLoader: convierte resultados de Spotify en medios reproducibles de YouTube.
+PlayerControls: botones e interacción del panel de Discord.
+bot.py: orquestación de comandos y flujo de reproducción.
 
 ---
 
 # Roadmap
 
+Ante cualquier duda sobre la siguiente tarea, se deberá consultar este documento antes de modificar la arquitectura.
+
 ## Etapa 1 — Consolidación de arquitectura (ACTUAL)
 
 Estado: En progreso
 
-- [ ] Integrar completamente MusicPlayer.
+### Arquitectura
+
+- [x] Integrar completamente MusicPlayer.
 - [x] Eliminar QueueManager.
-- [ ] Eliminar prefetch_cache.
-- [ ] Centralizar el estado del reproductor.
-- [ ] Optimizar la carga de playlists (YouTube, Spotify y futuros proveedores).
+- [x] Eliminar prefetch_cache.
+- [x] Centralizar el estado del reproductor.
+
+### Reproducción
+
+- [x] Estabilizar play_next().
+- [x] Corregir Skip.
+- [x] Corregir Stop.
+- [x] Corregir callback after_playing().
+- [x] Eliminar bucles de reproducción.
+- [x] Mantener reproducción continua.
+
+### Optimización
+
+- [ ] Optimizar la incorporación masiva de canciones (Spotify, YouTube y futuros proveedores).
+- [ ] Optimizar playlists de Spotify mayores a 100 canciones.
+- [ ] Optimizar playlists grandes de YouTube.
+- [ ] Implementar cache de streams.
 - [ ] Probar toda la reproducción.
 
 ---
@@ -144,13 +166,13 @@ Pendiente.
 
 # Tarea activa
 
-Integrar completamente MusicPlayer para que sea el núcleo del bot.
+Optimizar la carga de playlists.
 
 ---
 
 # Próximo paso
 
-Eliminar prefetch_cache integrando completamente MusicCache dentro de MusicPlayer.
+Finalizar completamente la Etapa 1.
 
 ---
 
@@ -223,6 +245,11 @@ Adoptada.
 - Se creó MusicCache.
 - Se creó Song.
 - Se eliminó QueueManager y toda la gestión de la cola quedó centralizada en MusicQueue.
+- MusicQueue pasó a formar parte de MusicPlayer.
+- Se eliminó prefetch_cache.
+- MusicCache pasó a formar parte de MusicPlayer.
+- Se eliminó PlayerState.
+- El estado principal del reproductor quedó centralizado en MusicPlayer.
 
 ## Funcionalidades
 
@@ -238,6 +265,16 @@ Adoptada.
 - Volumen.
 - Panel de reproducción.
 - Controles mediante botones.
+
+## Tecnologías
+
+Python continuará siendo el lenguaje principal del proyecto.
+
+No obstante, si para una funcionalidad puntual existe una ventaja técnica clara (rendimiento, mantenimiento, compatibilidad o experiencia de usuario), podrán incorporarse componentes escritos en otro lenguaje, siempre que:
+
+- no aumenten innecesariamente la complejidad del proyecto;
+- estén correctamente documentados;
+- puedan integrarse de forma estable con el resto del sistema.
 
 ---
 

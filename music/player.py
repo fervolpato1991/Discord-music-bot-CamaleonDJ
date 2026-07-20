@@ -23,3 +23,7 @@ class MusicPlayer:
         self.volume: float = 0.50
 
         self.idle: bool = True
+        self.stopping: bool = False
+        self.loading_next: bool = False
+
+        self.panel_message: discord.Message | None = None

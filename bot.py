@@ -7,8 +7,9 @@ import sys
 from dotenv import load_dotenv
 from discord.ext import commands
 from urllib.parse import urlparse
+from music.models import Song
 from music.player import MusicPlayer
-from music.services.music_services import MusicServices
+from music.services.music_services import MusicServices, MediaLoader
 
 # =========================
 # CONFIG
@@ -65,6 +66,7 @@ ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 
 player = MusicPlayer()
 services = MusicServices()
+loader = MediaLoader()
 
 # =========================
 # LOGGING
@@ -87,11 +89,11 @@ logger = logging.getLogger(__name__)
 def add_to_queue(url, title, requester):
 
     player.queue.add(
-        {
-            "url": url,
-            "title": title,
-            "requester": requester,
-        }
+        Song(
+            title=title,
+            webpage_url=url,
+            requester=requester,
+        )
     )
 
 def format_queue():
@@ -104,7 +106,7 @@ def format_queue():
     text = ""
 
     for i, song in enumerate(items[:5]):
-        text += f"`{i+1}.` {song['title']}\n"
+        text += f"`{i+1}.` {song.title}\n"
 
     if len(items) > 5:
         text += f"... y {len(items) - 5} más"
@@ -141,18 +143,30 @@ def create_embed(media, requester):
     return embed
 
 async def extract_info_safe(url):
+
     try:
-        data = await bot.loop.run_in_executor(
-            None, lambda: ytdl.extract_info(url, download=False)
+
+        return await bot.loop.run_in_executor(
+            None,
+            lambda: ytdl.extract_info(
+                url,
+                download=False,
+            ),
         )
-        return data
+
     except yt_dlp.utils.DownloadError as e:
-        logger.warning(f"Video no disponible, saltando: {url} — {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Error inesperado extrayendo info: {url} — {e}")
+
+        logger.warning(
+            f"Video no disponible: {url} ({e})"
+        )
+
         return None
 
+    except Exception as e:
+
+        logger.exception(e)
+
+        return None
 async def prefetch_next():
 
     if player.queue.is_empty():
@@ -160,21 +174,26 @@ async def prefetch_next():
 
     next_song = player.queue.peek()
 
-    url = next_song["url"]
+    if next_song is None:
+        return
 
-    if not player.cache.has(url):
+    url = next_song.webpage_url
 
-        logger.info(
-            f"Pre-fetcheando: {next_song['title']}"
-        )
+    if player.cache.has(url):
+        return
 
-        data = await extract_info_safe(url)
+    logger.info(
+        f"Pre-fetcheando: {next_song.title}"
+    )
+
+    data = await extract_info_safe(url)
+
+    if data is not None:
 
         player.cache.set(
             url,
             data,
         )
-
 async def resolve_spotify_track(index, track, sem):
 
     async with sem:
@@ -216,29 +235,75 @@ async def handle_spotify(
             content="🎵 Leyendo contenido de Spotify..."
         )
 
-        parsed = urlparse(search)
-        parts = parsed.path.strip("/").split("/")
-
-        if parts and parts[0].startswith("intl-"):
-            parts = parts[1:]
-
-        if len(parts) < 2:
-            await waiting_msg.edit(
-                content="❌ Enlace de Spotify no reconocido."
-            )
-            return
-
         spotify_tracks = await services.spotify.resolve(search)
 
         await waiting_msg.edit(
             content="🔍 Buscando canciones..."
         )
 
-        media_list = await services.loader.load_spotify_tracks(
-            spotify_tracks
+        added = 0
+        started = False
+
+        batch_size = 10
+
+        # Si la playlist está vacía
+        if not spotify_tracks:
+            await waiting_msg.delete()
+            await ctx.send("❌ No se encontró ninguna canción.")
+            return
+
+        # Comenzar a cargar el primer lote
+        next_task = asyncio.create_task(
+            loader.load_spotify_batch(
+                spotify_tracks,
+                0,
+                batch_size,
+            )
         )
 
-        added = 0
+        # Procesar todos los lotes excepto el último
+        for start in range(
+            batch_size,
+            len(spotify_tracks),
+            batch_size,
+        ):
+
+            media_list = await next_task
+
+            # Mientras procesamos este lote,
+            # comenzamos a cargar el siguiente.
+            next_task = asyncio.create_task(
+                loader.load_spotify_batch(
+                    spotify_tracks,
+                    start,
+                    batch_size,
+                )
+            )
+
+            for media in media_list:
+
+                add_to_queue(
+                    media.webpage_url,
+                    media.title,
+                    ctx.author,
+                )
+
+                added += 1
+
+                if (
+                    not started
+                    and not vc.is_playing()
+                    and not vc.is_paused()
+                ):
+                    started = True
+                    asyncio.create_task(
+                        play_next(ctx)
+                    )
+
+            await update_queue_panel()
+
+        # Procesar el último lote pendiente
+        media_list = await next_task
 
         for media in media_list:
 
@@ -251,11 +316,16 @@ async def handle_spotify(
             added += 1
 
             if (
-                added == 1
+                not started
                 and not vc.is_playing()
                 and not vc.is_paused()
             ):
-                await play_next(ctx)
+                started = True
+                asyncio.create_task(
+                    play_next(ctx)
+                )
+
+        await update_queue_panel()
 
         await waiting_msg.delete()
 
@@ -264,6 +334,7 @@ async def handle_spotify(
             await ctx.send(
                 "❌ No se encontró ninguna canción."
             )
+
             return
 
         await ctx.send(
@@ -272,14 +343,18 @@ async def handle_spotify(
 
         await update_queue_panel()
 
-    except Exception as e:
+    except Exception:
 
-        logger.exception(e)
+        logger.exception(
+            "Error procesando Spotify"
+        )
 
         try:
+
             await waiting_msg.edit(
                 content="❌ Error procesando Spotify."
             )
+
         except Exception:
             pass
 
@@ -434,48 +509,117 @@ async def handle_youtube_media(
 # =========================
 
 class PlayerControls(discord.ui.View):
+
     def __init__(self, vc):
+
         super().__init__(timeout=None)
+
         self.vc = vc
+
         self.update_buttons()
+
+    def get_vc(self):
+
+        return player.voice_client if player.voice_client else self.vc
 
     def update_buttons(self):
+
+        vc = self.get_vc()
+
         for item in self.children:
-            if isinstance(item, discord.ui.Button):
-                if item.custom_id == "pause_resume":
-                    if self.vc.is_paused():
-                        item.label = "▶️"
-                        item.style = discord.ButtonStyle.green
-                    else:
-                        item.label = "⏸️"
-                        item.style = discord.ButtonStyle.grey
 
-    @discord.ui.button(label="⏸️", style=discord.ButtonStyle.grey, custom_id="pause_resume")
-    async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.vc.is_playing():
-            self.vc.pause()
-        elif self.vc.is_paused():
-            self.vc.resume()
+            if (
+                isinstance(item, discord.ui.Button)
+                and item.custom_id == "pause_resume"
+            ):
+
+                if vc and vc.is_paused():
+
+                    item.label = "▶️"
+                    item.style = discord.ButtonStyle.green
+
+                else:
+
+                    item.label = "⏸️"
+                    item.style = discord.ButtonStyle.grey
+
+    @discord.ui.button(
+        label="⏸️",
+        style=discord.ButtonStyle.grey,
+        custom_id="pause_resume",
+    )
+    async def pause_resume(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
+        vc = self.get_vc()
+
+        if vc is None:
+
+            await interaction.response.defer()
+
+            return
+
+        if vc.is_playing():
+
+            vc.pause()
+
+        elif vc.is_paused():
+
+            vc.resume()
+
         self.update_buttons()
-        await interaction.response.edit_message(view=self)
 
-    @discord.ui.button(label="⏭️", style=discord.ButtonStyle.red)
-    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.vc.is_playing() or self.vc.is_paused():
-            self.vc.stop()
+        await interaction.response.edit_message(
+            view=self
+        )
+
+    @discord.ui.button(
+        label="⏭️",
+        style=discord.ButtonStyle.red,
+    )
+    async def skip(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
+        vc = self.get_vc()
+
+        logger.info("BOTON SKIP")
+
+        if vc:
+
+            logger.info(f"is_playing={vc.is_playing()}")
+            logger.info(f"is_paused={vc.is_paused()}")
+
+            vc.stop()
+
+            logger.info("vc.stop ejecutado")
+
         await interaction.response.defer()
-        
-    @discord.ui.button(label="⏹️", style=discord.ButtonStyle.grey)
+
+    @discord.ui.button(
+        label="⏹️",
+        style=discord.ButtonStyle.grey,
+    )
     async def stop_btn(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button,
-        ):
-        
-        if self.vc:
+    ):
+
+        vc = self.get_vc()
+
+        if vc:
+
             player.queue.clear()
             player.cache.clear()
-            self.vc.stop()
+
+            vc.stop()
+
         await interaction.response.defer()
 
 # =========================
@@ -483,107 +627,186 @@ class PlayerControls(discord.ui.View):
 # =========================
 
 async def refresh_panel(ctx, embed, view):
-    global now_playing_message
     try:
-        if now_playing_message:
-            await now_playing_message.delete()
+        if player.panel_message:
+            await player.panel_message.delete()
     except Exception:
         pass
-    now_playing_message = await ctx.send(embed=embed, view=view)
+    player.panel_message = await ctx.send(embed=embed, view=view)
 
 async def update_queue_panel():
-    global now_playing_message
-    if not now_playing_message:
+
+    if not player.panel_message:
         return
     try:
-        embed = now_playing_message.embeds[0]
+        embed = player.panel_message.embeds[0]
         for i, field in enumerate(embed.fields):
             if field.name == "📜 Próximas canciones":
                 embed.set_field_at(i, name="📜 Próximas canciones", value=format_queue(), inline=False)
                 break
-        await now_playing_message.edit(embed=embed)
+        await player.panel_message.edit(embed=embed)
     except Exception:
         pass
 
 async def play_next(ctx):
-    
+
+    logger.info("========== PLAY_NEXT ==========")
+
     vc = ctx.voice_client
 
-    if not vc or not vc.is_connected():
+    if vc is None or not vc.is_connected():
+
+        logger.info("No hay VoiceClient conectado.")
+
+        player.current_song = None
+        player.voice_client = None
+
         return
 
-    if player.queue.is_empty():
-        await asyncio.sleep(180)
+    while True:
 
-        if (
-            player.queue.is_empty()
-            and vc
-            and vc.is_connected()
-            and not vc.is_playing()
+        if player.queue.is_empty():
+
+            logger.info("Cola vacía.")
+
+            player.current_song = None
+
+            await asyncio.sleep(180)
+
+            if (
+                player.queue.is_empty()
+                and vc.is_connected()
+                and not vc.is_playing()
+                and not vc.is_paused()
             ):
-            await vc.disconnect()
-            await ctx.send("🔇 Me he desconectado del canal de voz debido a la inactividad.")
-        return
 
-    song = player.queue.next()
-    url = song["url"]
+                logger.info("Desconectando por inactividad.")
 
-    try:
-        media = await services.youtube.resolve_url(url)
-        media = await services.youtube.resolve_stream(media)
-        
-    except Exception as e:
-        logger.info(
-            f"Canción no disponible, saltada automáticamente: "
-            f"{song['title']} ({e})"
-        )
-        await play_next(ctx)
-        return
+                await vc.disconnect()
 
-    title = song["title"]
-    requester = song["requester"]
+                player.voice_client = None
 
-    stream_url = media.stream_url
-    
-    if not stream_url:
-        logger.warning(f"No se encontró URL de stream para: {url}")
-        await play_next(ctx)
-        return
+                await ctx.send(
+                    "🔇 Me he desconectado del canal de voz debido a la inactividad."
+                )
 
-    if vc.is_playing() or vc.is_paused():
+            return
+
+        song = player.queue.next()
+
+        if song is None:
+
+            logger.warning("queue.next() devolvió None.")
+
+            continue
+
+        logger.info(f"Reproduciendo: {song.title}")
+
+        player.current_song = song
+
         try:
-            vc.stop()
-        except Exception:
-            pass
 
-    try:
-        raw_audio = discord.FFmpegPCMAudio(
-            stream_url,
-            executable=FFMPEG_PATH,
-            before_options=ffmpeg_before_options,
-            **ffmpeg_options
-        )
-        
-        source = discord.PCMVolumeTransformer(raw_audio, volume=player.volume)
+            media = await services.youtube.resolve_url(
+                song.webpage_url
+            )
+            logger.info(media.webpage_url)
 
-        def after_playing(error):
-            if error:
-                logger.error(f"Error durante reproducción: {error}")
-            bot.loop.call_soon_threadsafe(
-                lambda: asyncio.ensure_future(play_next(ctx), loop=bot.loop)
+            media = await services.youtube.resolve_stream(
+                media
             )
 
-        vc.play(source, after=after_playing)
-        
-        embed = create_embed(media, requester)
+        except Exception as e:
+
+            logger.warning(
+                f"No se pudo cargar '{song.title}'. Saltando. ({e})"
+            )
+
+            continue
+
+        if not media.stream_url:
+
+            logger.warning(
+                f"'{song.title}' no tiene stream."
+            )
+
+            continue
+
+        try:
+
+            raw_audio = discord.FFmpegPCMAudio(
+                media.stream_url,
+                executable=FFMPEG_PATH,
+                before_options=ffmpeg_before_options,
+                **ffmpeg_options
+            )
+
+            source = discord.PCMVolumeTransformer(
+                raw_audio,
+                volume=player.volume,
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"No se pudo crear FFmpegAudio: {e}"
+            )
+
+            continue
+
+        def after_playing(error):
+
+            if error:
+
+                logger.error(
+                    f"Error reproduciendo: {error}"
+                )
+
+            future = asyncio.run_coroutine_threadsafe(
+                play_next(ctx),
+                bot.loop,
+            )
+
+            future.add_done_callback(
+                lambda f: logger.exception(f.exception())
+                if f.exception()
+                else None
+            )
+
+        try:
+
+            vc.play(
+                source,
+                after=after_playing,
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"vc.play() falló: {e}"
+            )
+
+            continue
+
+        player.voice_client = vc
+
+        embed = create_embed(
+            media,
+            song.requester,
+        )
+
         view = PlayerControls(vc)
-        await refresh_panel(ctx, embed, view)
 
-        await prefetch_next()
+        await refresh_panel(
+            ctx,
+            embed,
+            view,
+        )
 
-    except Exception as e:
-        logger.error(f"Error crítico al intentar reproducir {title}: {e}")
-        await play_next(ctx)
+        asyncio.create_task(
+            prefetch_next()
+        )
+
+        return
 
 # =========================
 # EVENTOS
@@ -680,24 +903,39 @@ async def play(ctx, *, search: str):
 
 @bot.command()
 async def skip(ctx):
+
     vc = ctx.voice_client
-    if vc and (vc.is_playing() or vc.is_paused()):
+
+    if vc:
+
+        logger.info(f"is_playing={vc.is_playing()}")
+
+        logger.info(f"is_paused={vc.is_paused()}")
+
+        player.stopping = True
+
         vc.stop()
-        await ctx.send(embed=discord.Embed(
-            description="⏭️ Canción saltada",
-            color=discord.Color.red()
-        ))
-    else:
-        await ctx.send("No hay nada reproduciéndose.")
+
+        logger.info("vc.stop ejecutado")
 
 @bot.command()
 async def stop(ctx):
+
     vc = ctx.voice_client
+
     if vc:
+
+        player.stopping = True
+
         player.queue.clear()
+
         player.cache.clear()
+
         vc.stop()
-        await ctx.send("⏹️ Detenido y cola vaciada.")
+
+        await ctx.send(
+            "⏹️ Detenido y cola vaciada."
+        )
 
 @bot.command()
 async def pause(ctx):
@@ -726,6 +964,7 @@ async def leave(ctx):
     if vc:
         player.queue.clear()
         player.cache.clear()
+        player.stopping = True
         vc.stop()
         await vc.disconnect()
 
@@ -841,7 +1080,7 @@ async def remove(ctx, position: int):
     await update_queue_panel()
 
     await ctx.send(
-        f"🗑 Eliminada de la cola:\n**{song['title']}**"
+        f"🗑 Eliminada de la cola:\n**{song.title}**"
     )
 
 @bot.command()
@@ -896,7 +1135,7 @@ async def jump(ctx, position: int):
         vc.stop()
 
     await ctx.send(
-        f"⏩ Saltando a **{song['title']}**"
+        f"⏩ Saltando a **{song.title}**"
     )
 
 

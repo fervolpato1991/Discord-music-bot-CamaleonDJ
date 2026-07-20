@@ -18,36 +18,76 @@ class MediaLoader:
     async def load_spotify_tracks(
         self,
         tracks: list[SpotifyTrack],
-        concurrency: int = 20,
+        concurrency: int = 5,
     ) -> list[Media]:
-
+        
         sem = asyncio.Semaphore(concurrency)
-
+        
         async def worker(track: SpotifyTrack):
-
+            
             async with sem:
-
+                
                 query = f"{track.title} {track.artist}"
-
+                
                 try:
 
-                    return await self.youtube.search_first(query)
-
+                    media = await self.youtube.search_best(
+                        track.title,
+                        track.artist,
+                    )
+                    
+                    return media
+                
                 except Exception as e:
-
+                    
                     logger.warning(
                         f"No se encontró en YouTube: "
-                        f"{track.title} - {track.artist} ({e})"
+                        f"{track.artist} - {track.title} | "
+                        f"Motivo: {e}"
                     )
-
                     return None
-
+                
         results = await asyncio.gather(
-            *[worker(track) for track in tracks]
+            *(worker(track) for track in tracks)
         )
-
-        return [
-            media
-            for media in results
-            if media is not None
-        ]
+        
+        found = []
+        failed = []
+        
+        for track, media in zip(tracks, results):
+            
+            if media is None:
+                failed.append(track)
+            else:
+                found.append(media)
+                
+        logger.info(
+            f"Spotify: {len(tracks)} canciones | "
+            f"Encontradas: {len(found)} | "
+            f"Fallidas: {len(failed)}"
+        )
+        
+        if failed:
+            
+            logger.warning(
+                "Canciones no encontradas:"
+            )
+            
+            for track in failed:
+                
+                logger.warning(
+                    f" - {track.artist} - {track.title}"
+                )
+            
+        return found
+    
+    async def load_spotify_batch(
+            self,
+            tracks: list[SpotifyTrack],
+            start: int,
+            size: int = 10,
+        ) -> list[Media]:
+        
+        batch = tracks[start:start + size]
+        
+        return await self.load_spotify_tracks(batch)

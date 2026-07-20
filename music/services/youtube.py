@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import yt_dlp
 
 from music.exceptions import SearchError, StreamError
 from music.models import Media, SearchResult
 from music.settings import YTDLP_OPTIONS
+
+
+logger = logging.getLogger(__name__)
 
 
 class YoutubeService:
@@ -20,7 +24,7 @@ class YoutubeService:
 
     async def search(self, query: str) -> list[SearchResult]:
 
-        data = await self._extract_info(f"ytsearch:{query}")
+        data = await self._extract_info(f"ytsearch1:{query}")
 
         entries = data.get("entries", [])
 
@@ -34,6 +38,49 @@ class YoutubeService:
         results = await self.search(query)
 
         return results[0]
+
+    async def search_best(
+            self,
+            title: str,
+            artist: str,
+    ) -> SearchResult:
+        
+        queries = [
+            f"{artist} {title}",
+            f"{title} {artist}",
+        ]
+        
+        tried = set()
+        
+        for query in queries:
+            
+            query = query.strip()
+            
+            if query in tried:
+                continue
+            
+            tried.add(query)
+            
+            try:
+                results = await self.search(query)
+                
+                if results:
+                    
+                    logger.info(
+                        
+                        f"YouTube encontrado: {query}"
+                    )
+                    
+                    return results[0]
+            
+            except SearchError:
+                
+                continue
+        
+        raise SearchError(
+            f"No se encontraron resultados para: "
+            f"{artist} - {title}"
+        )
 
     async def resolve_url(self, url: str) -> Media:
 
@@ -64,38 +111,43 @@ class YoutubeService:
             )
 
         return media_list
-
+    
     async def resolve_stream(self, media: Media) -> Media:
-
+        
         try:
-
-            data = await asyncio.to_thread(
-                self._ydl.extract_info,
-                media.webpage_url,
-                download=False
-            )
-
+            def extract():
+                
+                ydl = yt_dlp.YoutubeDL(YTDLP_OPTIONS)
+                
+                return ydl.extract_info(
+                    media.webpage_url,
+                    download=False,
+                )
+            
+            data = await asyncio.to_thread(extract)
+        
         except yt_dlp.utils.DownloadError as exc:
+            
             raise StreamError(str(exc)) from exc
-
+        
         except Exception as exc:
             raise StreamError(str(exc)) from exc
-
+        
         stream_url = data.get("url")
-
+        
         if not stream_url:
             raise StreamError(
                 "No fue posible obtener la URL del stream."
             )
-
+        
         return Media(
             title=media.title,
             webpage_url=media.webpage_url,
             stream_url=stream_url,
             duration=media.duration,
             thumbnail=media.thumbnail,
-            extractor=media.extractor,
-            video_id=media.video_id,
+            extractor=data.get("extractor", media.extractor),
+            video_id=data.get("id", media.video_id),
         )
 
     # ==========================================================
@@ -103,19 +155,28 @@ class YoutubeService:
     # ==========================================================
 
     async def _extract_info(self, query: str) -> dict:
-
-        try:
-
-            return await asyncio.to_thread(
-                self._ydl.extract_info,
+        
+        def extract():
+            
+            ydl = yt_dlp.YoutubeDL(YTDLP_OPTIONS)
+            
+            return ydl.extract_info(
                 query,
-                download=False
+                download=False,
             )
-
+        
+        try:
+            return await asyncio.to_thread(extract)
+        
         except yt_dlp.utils.DownloadError as exc:
+            
+            logger.exception(exc)
+            
             raise SearchError(str(exc)) from exc
-
+        
         except Exception as exc:
+            
+            logger.exception("Error completo")            
             raise SearchError(str(exc)) from exc
 
     def _parse_search_results(

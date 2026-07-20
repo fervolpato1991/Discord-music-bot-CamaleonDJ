@@ -6,6 +6,12 @@ from music.models import SpotifyTrack
 
 from urllib.parse import urlparse
 
+import logging
+import inspect
+
+print(dir(AsyncSpotifyClient))
+
+logger = logging.getLogger(__name__)
 
 class SpotifyService:
 
@@ -51,9 +57,12 @@ class SpotifyService:
         self,
         url: str,
     ) -> list[SpotifyTrack]:
-
+      
         async with AsyncSpotifyClient() as client:
-            playlist = await client.get_playlist(url)
+            playlist = await client.get_playlist(
+                url,
+                max_tracks=None
+            )
 
         tracks: list[SpotifyTrack] = []
 
